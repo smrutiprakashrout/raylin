@@ -310,7 +310,7 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
             nucleo_emojis.pattern.reparse(0, query, nucleo::pattern::CaseMatching::Ignore, nucleo::pattern::Normalization::Smart, false);
             while nucleo_emojis.tick(10).running { }
             let snapshot = nucleo_emojis.snapshot();
-            let count = snapshot.matched_item_count().min(500); // larger limit for grid
+            let count = snapshot.matched_item_count().min(3000); // show full emoji dataset
             
             // Preserve insertion order of categories matching the JSON original order
             let mut categories_map: indexmap::IndexMap<String, Vec<EmojiResult>> = indexmap::IndexMap::new();
@@ -386,84 +386,105 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
     enum MoveDir { Up, Down, Left, Right }
     let move_focus = |ui_weak: &slint::Weak<AppWindow>, dir: MoveDir| {
         if let Some(ui) = ui_weak.upgrade() {
-            let mut flat = Vec::new();
+            // Build a flat list from the LIVE filtered model in Slint.
+            // Each entry: (orig_index, cat_idx, local_row, local_col)
+            // We use flat-list POSITION (0..N) for navigation, not orig_index.
+            let mut flat: Vec<(i32, usize, i32, i32)> = Vec::new();
             let cats = ui.get_emoji_categories();
-            let mut global_row_offset = 0;
             for i in 0..cats.row_count() {
                 if let Some(cat) = cats.row_data(i) {
-                    let mut max_local_row = 0;
                     for j in 0..cat.emojis.row_count() {
                         if let Some(e) = cat.emojis.row_data(j) {
-                            flat.push((e.clone(), global_row_offset + e.row, i as i32));
-                            if e.row > max_local_row { max_local_row = e.row; }
+                            flat.push((e.orig_index, i, e.row, e.col));
                         }
-                    }
-                    if cat.emojis.row_count() > 0 {
-                        global_row_offset += max_local_row + 1;
                     }
                 }
             }
 
             if flat.is_empty() { return; }
-            let current_idx = ui.get_selected_index() as i32;
 
-            let current_info = flat.iter().find(|(e, _, _)| e.orig_index == current_idx);
-            let target_idx = if let Some(&(ref e, current_global_row, _)) = current_info {
-                match dir {
-                    MoveDir::Left => current_idx - 1,
-                    MoveDir::Right => current_idx + 1,
-                    MoveDir::Up | MoveDir::Down => {
-                        let target_row = if matches!(dir, MoveDir::Up) { current_global_row - 1 } else { current_global_row + 1 };
-                        let row_items: Vec<_> = flat.iter().filter(|(_, gr, _)| *gr == target_row).collect();
-                        if row_items.is_empty() {
-                            current_idx
+            let current_orig = ui.get_selected_index() as i32;
+
+            // Find the flat-list POSITION of the currently selected emoji.
+            // If it's not found (selection is off-screen after a filter), snap to 0.
+            let current_pos = flat.iter().position(|(oi, _, _, _)| *oi == current_orig)
+                .unwrap_or(0);
+
+            let (_, cur_cat, cur_row, cur_col) = flat[current_pos];
+
+            let next_pos = match dir {
+                // Left/Right: simple flat-list step, clamped to [0, N-1]
+                MoveDir::Left => current_pos.saturating_sub(1),
+                MoveDir::Right => (current_pos + 1).min(flat.len() - 1),
+
+                MoveDir::Up | MoveDir::Down => {
+                    let going_up = matches!(dir, MoveDir::Up);
+                    let target_local_row = if going_up { cur_row - 1 } else { cur_row + 1 };
+
+                    // Try to find a neighbor at target_local_row within the SAME category
+                    let same_cat_target: Option<usize> = flat
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, ci, r, _))| *ci == cur_cat && *r == target_local_row)
+                        .min_by_key(|(_, (_, _, _, c))| (c - cur_col).abs())
+                        .map(|(pos, _)| pos);
+
+                    if let Some(pos) = same_cat_target {
+                        pos
+                    } else if going_up {
+                        // Jump to the LAST row of the previous category, same column preference
+                        let prev_cat = (0..cur_cat).rev()
+                            .find(|&c| flat.iter().any(|(_, ci, _, _)| *ci == c));
+                        if let Some(pc) = prev_cat {
+                            let max_row = flat.iter()
+                                .filter(|(_, ci, _, _)| *ci == pc)
+                                .map(|(_, _, r, _)| *r)
+                                .max()
+                                .unwrap_or(0);
+                            flat.iter().enumerate()
+                                .filter(|(_, (_, ci, r, _))| *ci == pc && *r == max_row)
+                                .min_by_key(|(_, (_, _, _, c))| (c - cur_col).abs())
+                                .map(|(pos, _)| pos)
+                                .unwrap_or(current_pos)
                         } else {
-                            let target_col = e.col;
-                            let mut closest_idx = row_items[0].0.orig_index;
-                            for item in &row_items {
-                                if item.0.col <= target_col {
-                                    closest_idx = item.0.orig_index;
-                                }
-                                if item.0.col == target_col { break; }
-                            }
-                            closest_idx
+                            current_pos // already at the very first row
+                        }
+                    } else {
+                        // Jump to the FIRST row of the next category, same column preference
+                        let next_cat = (cur_cat + 1..cats.row_count())
+                            .find(|&c| flat.iter().any(|(_, ci, _, _)| *ci == c));
+                        if let Some(nc) = next_cat {
+                            flat.iter().enumerate()
+                                .filter(|(_, (_, ci, r, _))| *ci == nc && *r == 0)
+                                .min_by_key(|(_, (_, _, _, c))| (c - cur_col).abs())
+                                .map(|(pos, _)| pos)
+                                .unwrap_or(current_pos)
+                        } else {
+                            current_pos // already at the very last row
                         }
                     }
                 }
-            } else {
-                flat[0].0.orig_index
             };
 
-            if target_idx >= 0 && target_idx < flat.len() as i32 {
-                ui.set_selected_index(target_idx);
+            let (next_orig, next_cat, next_local_row, _) = flat[next_pos];
 
-                // Scroll-to-Visible Math calculation
-                if let Some(&(ref target_e, _, cat_idx)) = flat.iter().find(|(e, _, _)| e.orig_index == target_idx) {
-                    let mut y_offset = 0;
-                    
-                    // Sum up the height of all full categories preceding the category our target is in
-                    for i in 0..cats.row_count() {
-                        if i == cat_idx as usize { break; }
-                        if let Some(cat) = cats.row_data(i) {
-                            if cat.emojis.row_count() > 0 {
-                                // Category Header ~30px, each row = 85px, 7 columns
-                                let rows = (cat.emojis.row_count() as f32 / 7.0).ceil() as i32;
-                                y_offset += 30 + (rows * 85);
-                                y_offset += 16; // spacing between categories
-                            }
-                        }
+            // Update the Slint selection
+            ui.set_selected_index(next_orig);
+
+            // Scroll-to-visible: calculate absolute y of the target tile
+            let mut y_offset: i32 = 0;
+            for i in 0..cats.row_count() {
+                if i == next_cat { break; }
+                if let Some(cat) = cats.row_data(i) {
+                    if cat.emojis.row_count() > 0 {
+                        let rows = (cat.emojis.row_count() as f32 / 7.0).ceil() as i32;
+                        y_offset += 30 + (rows * 85) + 16; // header + rows + gap
                     }
-                    
-                    // Add the Header height for the target's own category
-                    y_offset += 30;
-                    
-                    // Add the height of the row the target is in within its category
-                    let target_row_within_cat = target_e.row;
-                    y_offset += target_row_within_cat * 85;
-                    
-                    ui.invoke_update_scroll(y_offset as f32);
                 }
             }
+            y_offset += 30;                  // own category header
+            y_offset += next_local_row * 85; // row within own category
+            ui.invoke_update_scroll(y_offset as f32);
         }
     };
 

@@ -242,11 +242,13 @@ export component AppWindow inherits Window {
                     // EMOJI UI
                     if root.active_mode == AppMode.Emoji : VerticalBox {
                         alignment: start;
-                        spacing: 16px;
+                        padding-top: 16px;
+                        padding-bottom: 16px;
+                        spacing: 20px;
 
                         for category in root.emoji_categories : VerticalBox {
                             padding: 0;
-                            spacing: 8px;
+                            spacing: 12px;
                             
                             // Header Row
                             HorizontalBox {
