@@ -335,8 +335,8 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
                     group_list.push(EmojiResult { 
                         character: item.data.character.clone().into(), 
                         name: item.data.name.clone().into(),
-                        row: (group_list.len() / 8) as i32,
-                        col: (group_list.len() % 8) as i32,
+                        row: (group_list.len() / 7) as i32,
+                        col: (group_list.len() % 7) as i32,
                         orig_index: flat_index,
                     });
                     flat_index += 1;
@@ -446,10 +446,9 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
                         if i == cat_idx as usize { break; }
                         if let Some(cat) = cats.row_data(i) {
                             if cat.emojis.row_count() > 0 {
-                                // Category Header roughly ~ 30px (Text height + padding)
-                                // Flow layout height: ceil(count / 8) * 54
-                                let rows = (cat.emojis.row_count() as f32 / 8.0).ceil() as i32;
-                                y_offset += 30 + (rows * 54);
+                                // Category Header ~30px, each row = 85px, 7 columns
+                                let rows = (cat.emojis.row_count() as f32 / 7.0).ceil() as i32;
+                                y_offset += 30 + (rows * 85);
                                 y_offset += 16; // spacing between categories
                             }
                         }
@@ -460,7 +459,7 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
                     
                     // Add the height of the row the target is in within its category
                     let target_row_within_cat = target_e.row;
-                    y_offset += target_row_within_cat * 54;
+                    y_offset += target_row_within_cat * 85;
                     
                     ui.invoke_update_scroll(y_offset as f32);
                 }

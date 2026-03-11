@@ -189,8 +189,13 @@ export component AppWindow inherits Window {
                 scroll := ScrollView {
                     height: 100%;
                     width: 100%;
-                    // Automatically scroll to active visible emoji via Rust callback updates
-                    viewport-y: root.current_scroll_y;
+                    // viewport-height tells the ScrollView how tall the content is so the scrollbar appears.
+                    // For emoji mode we estimate: each category ~400px; for lists: row count * 54px.
+                    viewport-height: root.active_mode == AppMode.Emoji
+                        ? max(root.list_height + 1px, root.emoji_categories.length * 400px)
+                        : root.active_mode == AppMode.Root
+                            ? root.results.length * 54px
+                            : root.clipboard_results.length * 54px;
                     
                     // APP SEARCH UI
                     if root.active_mode == AppMode.Root : VerticalBox {
@@ -265,22 +270,22 @@ export component AppWindow inherits Window {
                             
                             // Emojis Flow
                             Rectangle {
-                                // Calculate height dynamically based on items. (ceil(count/8) * 54px)
-                                height: ceil(category.emojis.length / 8) * 54px;
+                                // 7 columns × 90px per cell; ceil(count/7) rows × 85px per row
+                                height: ceil(category.emojis.length / 7) * 85px;
                                 
                                 for result[i] in category.emojis : Rectangle {
-                                    x: (mod(i, 8)) * 60px + 12px;
-                                    y: floor(i / 8) * 54px;
-                                    width: 50px;
-                                    height: 50px;
-                                    background: result.orig_index == root.selected_index ? #89b4fa40 : transparent;
+                                    x: (mod(i, 7)) * 90px + 10px;
+                                    y: floor(i / 7) * 85px;
+                                    width: 75px;
+                                    height: 75px;
+                                    background: result.orig_index == root.selected_index ? #89b4fa40 : #1b2331;
                                     border-radius: 8px;
-                                    border-width: result.orig_index == root.selected_index ? 2px : 0px;
-                                    border-color: result.orig_index == root.selected_index ? #89b4fa : transparent;
+                                    border-width: 2px;
+                                    border-color: result.orig_index == root.selected_index ? #89b4fa : #283448;
 
                                     Text {
                                         text: result.character;
-                                        font-size: 32px;
+                                        font-size: 50px;
                                         font-family: "Noto Color Emoji";
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -365,21 +370,20 @@ export component AppWindow inherits Window {
         }
     }
     
-    // Bind the update event externally defined in rust
+    // update-scroll: Rust calls this after key navigation to keep the selected emoji visible.
+    // Writes scroll.viewport-y directly so mouse-wheel scrolling works freely between keystrokes.
     update-scroll(target_y) => {
-        // Simple logic: if Target is further down, adjust scroll view to match
-        // Viewport-Y is generally negative (e.g. -100px shifts internal content UP 100px so we see lower items)
-        let viewport_top = 0px - root.current_scroll_y;
-        let viewport_bottom = viewport_top + scroll.height;
-        
-        // Let's add ~50px padding to keep active item in comfortable view
-        let target = target_y * 1px;
-        let item_bottom = target + 54px; // 54px is row height
+        let tgt = target_y * 1px;
+        let item_bot = tgt + 85px;
+        let view_top = 0px - scroll.viewport-y;
+        let view_bot = view_top + scroll.height;
 
-        if (target < viewport_top) {
-            root.current_scroll_y = 0px - target + 16px; 
-        } else if (item_bottom > viewport_bottom) {
-            root.current_scroll_y = 0px - (item_bottom - scroll.height) - 16px; 
+        if (tgt < view_top) {
+            // Item above visible area → scroll up
+            scroll.viewport-y = 0px - tgt + 8px;
+        } else if (item_bot > view_bot) {
+            // Item below visible area → scroll down
+            scroll.viewport-y = 0px - (item_bot - scroll.height) - 8px;
         }
     }
 }
