@@ -1,17 +1,45 @@
 import { VerticalBox, HorizontalBox, ScrollView, ListView } from "std-widgets.slint";
 
+export enum AppMode {
+    Root,
+    Emoji,
+    Clipboard,
+}
+
 export struct SearchResult {
     name: string,
     exec: string,
     icon: image,
 }
 
+export struct EmojiResult {
+    character: string,
+    name: string,
+    row: int,
+    col: int,
+    orig_index: int,
+}
+
+export struct EmojiCategory {
+    name: string,
+    count: int,
+    emojis: [EmojiResult],
+}
+
+export struct ClipboardResult {
+    content: string,
+}
+
 export component AppWindow inherits Window {
     // Input properties
     in-out property <string> search_text: "";
     // State properties
+    in-out property <AppMode> active_mode: AppMode.Root;
     in property <[SearchResult]> results: [];
+    in property <[EmojiCategory]> emoji_categories: [];
+    in property <[ClipboardResult]> clipboard_results: [];
     in-out property <int> selected_index: 0;
+    in-out property <length> current_scroll_y: 0px;
 
     // Callbacks
     callback text-changed(string);
@@ -19,14 +47,24 @@ export component AppWindow inherits Window {
     callback next-item();
     callback prev-item();
     callback execute-selected();
+    callback pop-mode();
+    callback nav-up();
+    callback nav-down();
+    callback nav-left();
+    callback nav-right();
+    callback update-scroll(float);
 
     no-frame: true;
     background: transparent;
     forward-focus: search_input;
 
-    // Chameleon behavior: Base height of 106px (SearchBar 65px + Divider 1px + Footer 40px)
-    // Plus 1px for second divider and dynamic list height
-    height: search_text == "" ? 106px : 107px + min(results.length * 54px, 400px);
+    // Chameleon behavior: Base height of 106px
+    // Variable list heights depending on mode
+    property <length> list_height: root.active_mode == AppMode.Root ? min(results.length * 54px, 400px) : 
+                                   root.active_mode == AppMode.Emoji ? 400px : // Keep fixed size for FlowLayout scrolling
+                                   min(clipboard_results.length * 54px, 400px);
+
+    height: search_text == "" && root.active_mode == AppMode.Root ? 106px : 107px + list_height;
     width: 650px;
     
     // Main Container with Glassmorphism and rounded corners
@@ -46,18 +84,41 @@ export component AppWindow inherits Window {
                 height: 65px;
                 background: transparent;
 
-                search_input := TextInput {
-                    x: 16px;
-                    y: 16px;
-                    width: parent.width - 32px;
-                    height: 33px;
-                    font-size: 24px;
-                    color: #cdd6f4;
-                    text <=> root.search_text;
-                    single-line: true;
-                    
-                    // Request focus immediately upon mapping
-                    init => {
+                HorizontalBox {
+                    padding: 0;
+                    spacing: 0;
+
+                    // Conditional Back Button
+                    if root.active_mode != AppMode.Root : Rectangle {
+                        width: 48px;
+                        height: 65px;
+                        
+                        Text {
+                            text: "⬅";
+                            font-size: 20px;
+                            color: #cdd6f4;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.pop-mode();
+                            }
+                        }
+                    }
+
+                    search_input := TextInput {
+                        width: parent.width - 32px;
+                        height: 33px;
+                        font-size: 24px;
+                        color: #cdd6f4;
+                        text <=> root.search_text;
+                        single-line: true;
+                        
+                        // Request focus immediately upon mapping
+                        init => {
                         self.focus();
                     }
 
@@ -70,16 +131,47 @@ export component AppWindow inherits Window {
                     }
                     // Capture Up/Down arrows to navigate natively
                     key-pressed(event) => {
+                        if (event.text == Key.Escape) {
+                            if (root.active_mode != AppMode.Root) {
+                                root.pop-mode();
+                                return accept;
+                            } else {
+                                return reject;
+                            }
+                        }
                         if (event.text == Key.UpArrow) {
-                            root.selected_index = max(0, root.selected_index - 1);
+                            if (root.active_mode == AppMode.Emoji) {
+                                root.nav-up();
+                            } else {
+                                root.selected_index = max(0, root.selected_index - 1);
+                            }
                             return accept;
                         }
                         if (event.text == Key.DownArrow) {
-                            root.selected_index = min(max(0, root.results.length - 1), root.selected_index + 1);
+                            if (root.active_mode == AppMode.Emoji) {
+                                root.nav-down();
+                            } else {
+                                let max_idx = root.active_mode == AppMode.Root ? max(0, root.results.length - 1) :
+                                              max(0, root.clipboard_results.length - 1);
+                                root.selected_index = min(max_idx, root.selected_index + 1);
+                            }
                             return accept;
+                        }
+                        if (event.text == Key.LeftArrow) {
+                            if (root.active_mode == AppMode.Emoji) {
+                                root.nav-left();
+                                return accept;
+                            }
+                        }
+                        if (event.text == Key.RightArrow) {
+                            if (root.active_mode == AppMode.Emoji) {
+                                root.nav-right();
+                                return accept;
+                            }
                         }
                         return reject;
                     }
+                }
                 }
             }
 
@@ -91,13 +183,17 @@ export component AppWindow inherits Window {
 
             // Middle: Scrollable Results container
             Rectangle {
-                height: root.search_text == "" ? 0px : min(root.results.length * 54px, 400px);
+                height: search_text == "" && root.active_mode == AppMode.Root ? 0px : root.list_height;
                 clip: true; // clip ensures it vanishes completely without overflow
                 
-                ScrollView {
+                scroll := ScrollView {
                     height: 100%;
                     width: 100%;
-                    VerticalBox {
+                    // Automatically scroll to active visible emoji via Rust callback updates
+                    viewport-y: root.current_scroll_y;
+                    
+                    // APP SEARCH UI
+                    if root.active_mode == AppMode.Root : VerticalBox {
                         alignment: start;
                         spacing: 4px;
 
@@ -137,6 +233,99 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+
+                    // EMOJI UI
+                    if root.active_mode == AppMode.Emoji : VerticalBox {
+                        alignment: start;
+                        spacing: 16px;
+
+                        for category in root.emoji_categories : VerticalBox {
+                            padding: 0;
+                            spacing: 8px;
+                            
+                            // Header Row
+                            HorizontalBox {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                alignment: start;
+                                spacing: 8px;
+                                
+                                Text {
+                                    text: category.name;
+                                    color: #bac2de;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: category.count;
+                                    color: #6c7086;
+                                    font-size: 14px;
+                                }
+                            }
+                            
+                            // Emojis Flow
+                            Rectangle {
+                                // Calculate height dynamically based on items. (ceil(count/8) * 54px)
+                                height: ceil(category.emojis.length / 8) * 54px;
+                                
+                                for result[i] in category.emojis : Rectangle {
+                                    x: (mod(i, 8)) * 60px + 12px;
+                                    y: floor(i / 8) * 54px;
+                                    width: 50px;
+                                    height: 50px;
+                                    background: result.orig_index == root.selected_index ? #89b4fa40 : transparent;
+                                    border-radius: 8px;
+                                    border-width: result.orig_index == root.selected_index ? 2px : 0px;
+                                    border-color: result.orig_index == root.selected_index ? #89b4fa : transparent;
+
+                                    Text {
+                                        text: result.character;
+                                        font-size: 32px;
+                                        font-family: "Noto Color Emoji";
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                        width: 100%;
+                                        height: 100%;
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.selected_index = result.orig_index;
+                                            root.execute-selected();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // CLIPBOARD UI
+                    if root.active_mode == AppMode.Clipboard : VerticalBox {
+                        alignment: start;
+                        spacing: 4px;
+
+                        for result[i] in root.clipboard_results : Rectangle {
+                            height: 50px;
+                            background: i == root.selected_index ? #89b4fa40 : transparent;
+                            border-radius: 8px;
+
+                            HorizontalBox {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                
+                                Text {
+                                    text: result.content;
+                                    color: i == root.selected_index ? #cdd6f4 : #bac2de;
+                                    font-size: 14px;
+                                    font-weight: i == root.selected_index ? 600 : 400;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                            TouchArea { clicked => { root.selected_index = i; root.execute-selected(); } }
+                        }
+                    }
                 }
             }
 
@@ -156,21 +345,41 @@ export component AppWindow inherits Window {
                         padding-right: 16px;
                         
                         Text {
-                            text: "App Indexer v1 ❄";
+                            text: root.active_mode == AppMode.Emoji ? "Show Details" :
+                                  root.active_mode == AppMode.Root ? "App Indexer v1 ❄" :  
+                                  "Clipboard History 📋";
                             color: #a6adc8;
                             font-size: 12px;
                             vertical-alignment: center;
                         }
 
                         Text {
-                            text: "Type to Search • Enter to Open";
+                            text: root.active_mode == AppMode.Emoji ? "Enter ↵ to Copy" : "Type to Search • Enter to Open";
                             color: #6c7086;
                             font-size: 12px;
                             vertical-alignment: center;
                             horizontal-alignment: right;
+                        }
                     }
-                }
             }
+        }
+    }
+    
+    // Bind the update event externally defined in rust
+    update-scroll(target_y) => {
+        // Simple logic: if Target is further down, adjust scroll view to match
+        // Viewport-Y is generally negative (e.g. -100px shifts internal content UP 100px so we see lower items)
+        let viewport_top = 0px - root.current_scroll_y;
+        let viewport_bottom = viewport_top + scroll.height;
+        
+        // Let's add ~50px padding to keep active item in comfortable view
+        let target = target_y * 1px;
+        let item_bottom = target + 54px; // 54px is row height
+
+        if (target < viewport_top) {
+            root.current_scroll_y = 0px - target + 16px; 
+        } else if (item_bottom > viewport_bottom) {
+            root.current_scroll_y = 0px - (item_bottom - scroll.height) - 16px; 
         }
     }
 }

@@ -2,6 +2,7 @@ use freedesktop_desktop_entry::DesktopEntry;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, hotkey::{HotKey, Modifiers, Code}};
 use nucleo::{Config, Nucleo};
 use rusqlite::{Connection, Result as SqlResult};
+use serde::Deserialize;
 use slint::{ComponentHandle, Model, SharedPixelBuffer, VecModel, Image};
 use std::error::Error;
 use std::fs;
@@ -10,6 +11,19 @@ use std::rc::Rc;
 use walkdir::WalkDir;
 
 slint::include_modules!();
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct EmojiRawData {
+    pub name: String,
+    pub group: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmojiData {
+    pub character: String,
+    pub name: String,
+    pub group: String,
+}
 
 /// App data model
 #[derive(Clone, Debug)]
@@ -154,99 +168,336 @@ fn setup_clipboard_db() -> SqlResult<Connection> {
     Ok(conn)
 }
 
+fn load_emojis() -> indexmap::IndexMap<String, Vec<EmojiData>> {
+    let emoji_str = include_str!("../emojis.json");
+    // Parse to preserve order of outer array, even though it's technically a list of objects with one key
+    let parsed: Vec<indexmap::IndexMap<String, EmojiRawData>> = serde_json::from_str(emoji_str).unwrap_or_else(|_e| {
+        println!("Error parsing emojis: {:?}", _e);
+        vec![]
+    });
+    
+    // We use an IndexMap to preserve the exact category order found in the JSON
+    let mut groups: indexmap::IndexMap<String, Vec<EmojiData>> = indexmap::IndexMap::new();
+    
+    for map in parsed {
+        for (character, raw) in map {
+            groups.entry(raw.group.clone()).or_insert_with(Vec::new).push(EmojiData {
+                character,
+                name: raw.name,
+                group: raw.group,
+            });
+        }
+    }
+    groups
+}
+
+fn get_clipboard_history(conn: &Connection) -> Vec<String> {
+    let mut stmt = conn.prepare("SELECT content FROM clipboard_history ORDER BY timestamp DESC LIMIT 50").unwrap_or_else(|_| panic!("Failed to prepare statement"));
+    let mut rows = stmt.query([]).unwrap();
+    let mut history = Vec::new();
+    while let Ok(Some(row)) = rows.next() {
+        let content: String = row.get(0).unwrap();
+        history.push(content);
+    }
+    history
+}
+
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn Error>> {
     // 1. Initialize Slint UI
     let ui = AppWindow::new()?;
 
     // 2. Initialize background processes
-    // Global hotkey
+    // Global hotkeys
     let manager = GlobalHotKeyManager::new().unwrap();
-    let hotkey = HotKey::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
-    manager.register(hotkey).unwrap();
+    let hotkey_main = HotKey::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Space);
+    let hotkey_emoji = HotKey::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyE);
+    let hotkey_clip = HotKey::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyV);
+    
+    manager.register(hotkey_main).unwrap();
+    manager.register(hotkey_emoji).unwrap();
+    manager.register(hotkey_clip).unwrap();
 
-    // Clipboard DB
-    let _conn = setup_clipboard_db().map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    // Clipboard DB & Emojis
+    let conn = setup_clipboard_db().map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    let clip_history = get_clipboard_history(&conn);
+    let emoji_db = load_emojis();
 
-    // 3. App Indexer using Nucleo
+    // 3. Nucleo Indexers
     println!("Scanning applications...");
     let apps = scan_desktop_files();
     
-    let mut nucleo = Nucleo::<AppEntry>::new(
-        Config::DEFAULT,
-        std::sync::Arc::new(|| {}),
-        None, // num_threads
-        1,    // columns (0: name)
-    );
+    let mut nucleo_apps = Nucleo::<AppEntry>::new(Config::DEFAULT, std::sync::Arc::new(|| {}), None, 1);
+    let mut nucleo_emojis = Nucleo::<EmojiData>::new(Config::DEFAULT, std::sync::Arc::new(|| {}), None, 1);
+    let mut nucleo_clip = Nucleo::<String>::new(Config::DEFAULT, std::sync::Arc::new(|| {}), None, 1);
 
-    // Inject items into nucleo matcher
-    let injector = nucleo.injector();
+    // Inject data
+    let inj_apps = nucleo_apps.injector();
     for app in &apps {
-        injector.push(app.clone(), |app, columns| {
-            // Index the name
-            columns[0] = app.name.clone().into();
-        });
+        inj_apps.push(app.clone(), |a, c| { c[0] = a.name.clone().into(); });
+    }
+    
+    let inj_emojis = nucleo_emojis.injector();
+    let mut flat_index = 0;
+    // We inject emojis in the exact order parsed to maintain original group sequence during blank searches
+    for (group_name, emojis_in_group) in &emoji_db {
+        for e in emojis_in_group {
+            inj_emojis.push(e.clone(), |e_item, c| { c[0] = e_item.name.clone().into(); });
+            flat_index += 1;
+        }
+    }
+
+    let inj_clip = nucleo_clip.injector();
+    for c in &clip_history {
+        inj_clip.push(c.clone(), |c_item, col| { col[0] = c_item.clone().into(); });
     }
     
     // Wait for initial injestion
-    while nucleo.tick(10).running { }
+    while nucleo_apps.tick(10).running { }
+    while nucleo_emojis.tick(10).running { }
+    while nucleo_clip.tick(10).running { }
+
+    // Navigation Context Handling
+    let ui_handle_pop = ui.as_weak();
+    ui.on_pop_mode(move || {
+        let ui = ui_handle_pop.unwrap();
+        ui.set_active_mode(AppMode::Root);
+        ui.set_search_text("".into());
+        ui.invoke_text_changed("".into());
+        ui.invoke_update_scroll(0.0);
+    });
 
     let ui_handle = ui.as_weak();
     
     // 4. Input Text Changed Logic
     ui.on_text_changed(move |text| {
         let ui = ui_handle.unwrap();
-        let query = text.as_str();
+        let mut query = text.as_str();
 
-        // Perform search
-        nucleo.pattern.reparse(
-            0,
-            query,
-            nucleo::pattern::CaseMatching::Ignore,
-            nucleo::pattern::Normalization::Smart,
-            false
-        );
-
-        // Tick to process the search
-        while nucleo.tick(10).running { }
-
-        let snapshot = nucleo.snapshot();
-        let mut results = Vec::new();
-        
-        let count = snapshot.matched_item_count().min(8);
-        for i in 0..count {
-            if let Some(item) = snapshot.get_matched_item(i) {
-                // If the app has an absolute path we found, load it into an image
-                let slint_image = if !item.data.icon_path.is_empty() {
-                    let path = std::path::Path::new(&item.data.icon_path);
-                    if let Ok(image) = slint::Image::load_from_path(path) {
-                        image
-                    } else {
-                        slint::Image::default()
-                    }
-                } else {
-                    slint::Image::default()
-                };
-
-                results.push(SearchResult {
-                    name: item.data.name.clone().into(),
-                    exec: item.data.exec.clone().into(),
-                    icon: slint_image,
-                });
+        // Check Hard Prefixes if in root AppSearch mode
+        if ui.get_active_mode() == AppMode::Root {
+            if query == ":e" || query.starts_with(":e ") {
+                ui.set_active_mode(AppMode::Emoji);
+                ui.set_search_text("".into()); // Strip prefix
+                query = "";
+            } else if query == ":c" || query.starts_with(":c ") {
+                ui.set_active_mode(AppMode::Clipboard);
+                ui.set_search_text("".into()); // Strip prefix
+                query = "";
             }
         }
 
-        let model = Rc::new(VecModel::from(results));
-        ui.set_results(model.into());
-        ui.set_selected_index(0); // Reset selection
+        let mode = ui.get_active_mode();
+
+        if mode == AppMode::Root {
+            nucleo_apps.pattern.reparse(0, query, nucleo::pattern::CaseMatching::Ignore, nucleo::pattern::Normalization::Smart, false);
+            while nucleo_apps.tick(10).running { }
+            let snapshot = nucleo_apps.snapshot();
+            let mut results = Vec::new();
+            
+            let count = snapshot.matched_item_count().min(8);
+            for i in 0..count {
+                if let Some(item) = snapshot.get_matched_item(i) {
+                    let slint_image = if !item.data.icon_path.is_empty() {
+                        if let Ok(image) = slint::Image::load_from_path(std::path::Path::new(&item.data.icon_path)) { image } else { slint::Image::default() }
+                    } else { slint::Image::default() };
+                    results.push(SearchResult { name: item.data.name.clone().into(), exec: item.data.exec.clone().into(), icon: slint_image });
+                }
+            }
+            ui.set_results(Rc::new(VecModel::from(results)).into());
+            
+        } else if mode == AppMode::Emoji {
+            nucleo_emojis.pattern.reparse(0, query, nucleo::pattern::CaseMatching::Ignore, nucleo::pattern::Normalization::Smart, false);
+            while nucleo_emojis.tick(10).running { }
+            let snapshot = nucleo_emojis.snapshot();
+            let count = snapshot.matched_item_count().min(500); // larger limit for grid
+            
+            // Preserve insertion order of categories matching the JSON original order
+            let mut categories_map: indexmap::IndexMap<String, Vec<EmojiResult>> = indexmap::IndexMap::new();
+            
+            // If the query is empty, we must pre-populate the map with ALL original category keys
+            // so that the exact JSON order is strictly maintained.
+            if query.is_empty() {
+                for key in emoji_db.keys() {
+                    categories_map.insert(key.clone(), Vec::new());
+                }
+            }
+
+            let mut flat_index = 0;
+            for i in 0..count {
+                if let Some(item) = snapshot.get_matched_item(i) {
+                    let group_name = item.data.group.clone();
+                    
+                    // If not pre-populated, this will insert it in the order found by Nucleo.
+                    // For blank queries, it perfectly drops into the pre-populated ordered keys.
+                    let group_list = categories_map.entry(group_name).or_insert(Vec::new());
+                    
+                    group_list.push(EmojiResult { 
+                        character: item.data.character.clone().into(), 
+                        name: item.data.name.clone().into(),
+                        row: (group_list.len() / 8) as i32,
+                        col: (group_list.len() % 8) as i32,
+                        orig_index: flat_index,
+                    });
+                    flat_index += 1;
+                }
+            }
+            
+            // Filter out empty categories (important when searching)
+            let mut categories_map: indexmap::IndexMap<String, Vec<EmojiResult>> = categories_map
+                .into_iter()
+                .filter(|(_, items)| !items.is_empty())
+                .collect();
+            
+            let mut categories = Vec::new();
+            for (name, emojis) in categories_map {
+                let name_str: String = name;
+                categories.push(EmojiCategory {
+                    name: name_str.into(),
+                    count: emojis.len() as i32,
+                    emojis: Rc::new(VecModel::from(emojis)).into(),
+                });
+            }
+            ui.set_emoji_categories(Rc::new(VecModel::from(categories)).into());
+            if query.is_empty() {
+                ui.set_selected_index(0); // Only reset selection if this is an explicit root search, not general typing
+                ui.invoke_update_scroll(0.0); // Snap back to top
+            }
+
+        } else if mode == AppMode::Clipboard {
+            nucleo_clip.pattern.reparse(0, query, nucleo::pattern::CaseMatching::Ignore, nucleo::pattern::Normalization::Smart, false);
+            while nucleo_clip.tick(10).running { }
+            let snapshot = nucleo_clip.snapshot();
+            let mut results = Vec::new();
+            
+            let count = snapshot.matched_item_count().min(12);
+            for i in 0..count {
+                if let Some(item) = snapshot.get_matched_item(i) {
+                    results.push(ClipboardResult { content: item.data.clone().into() });
+                }
+            }
+            ui.set_clipboard_results(Rc::new(VecModel::from(results)).into());
+        }
+
+        if mode == AppMode::Root || mode == AppMode::Clipboard {
+            ui.set_selected_index(0); // Reset selection
+        }
     });
-    
+    enum MoveDir { Up, Down, Left, Right }
+    let move_focus = |ui_weak: &slint::Weak<AppWindow>, dir: MoveDir| {
+        if let Some(ui) = ui_weak.upgrade() {
+            let mut flat = Vec::new();
+            let cats = ui.get_emoji_categories();
+            let mut global_row_offset = 0;
+            for i in 0..cats.row_count() {
+                if let Some(cat) = cats.row_data(i) {
+                    let mut max_local_row = 0;
+                    for j in 0..cat.emojis.row_count() {
+                        if let Some(e) = cat.emojis.row_data(j) {
+                            flat.push((e.clone(), global_row_offset + e.row, i as i32));
+                            if e.row > max_local_row { max_local_row = e.row; }
+                        }
+                    }
+                    if cat.emojis.row_count() > 0 {
+                        global_row_offset += max_local_row + 1;
+                    }
+                }
+            }
+
+            if flat.is_empty() { return; }
+            let current_idx = ui.get_selected_index() as i32;
+
+            let current_info = flat.iter().find(|(e, _, _)| e.orig_index == current_idx);
+            let target_idx = if let Some(&(ref e, current_global_row, _)) = current_info {
+                match dir {
+                    MoveDir::Left => current_idx - 1,
+                    MoveDir::Right => current_idx + 1,
+                    MoveDir::Up | MoveDir::Down => {
+                        let target_row = if matches!(dir, MoveDir::Up) { current_global_row - 1 } else { current_global_row + 1 };
+                        let row_items: Vec<_> = flat.iter().filter(|(_, gr, _)| *gr == target_row).collect();
+                        if row_items.is_empty() {
+                            current_idx
+                        } else {
+                            let target_col = e.col;
+                            let mut closest_idx = row_items[0].0.orig_index;
+                            for item in &row_items {
+                                if item.0.col <= target_col {
+                                    closest_idx = item.0.orig_index;
+                                }
+                                if item.0.col == target_col { break; }
+                            }
+                            closest_idx
+                        }
+                    }
+                }
+            } else {
+                flat[0].0.orig_index
+            };
+
+            if target_idx >= 0 && target_idx < flat.len() as i32 {
+                ui.set_selected_index(target_idx);
+
+                // Scroll-to-Visible Math calculation
+                if let Some(&(ref target_e, _, cat_idx)) = flat.iter().find(|(e, _, _)| e.orig_index == target_idx) {
+                    let mut y_offset = 0;
+                    
+                    // Sum up the height of all full categories preceding the category our target is in
+                    for i in 0..cats.row_count() {
+                        if i == cat_idx as usize { break; }
+                        if let Some(cat) = cats.row_data(i) {
+                            if cat.emojis.row_count() > 0 {
+                                // Category Header roughly ~ 30px (Text height + padding)
+                                // Flow layout height: ceil(count / 8) * 54
+                                let rows = (cat.emojis.row_count() as f32 / 8.0).ceil() as i32;
+                                y_offset += 30 + (rows * 54);
+                                y_offset += 16; // spacing between categories
+                            }
+                        }
+                    }
+                    
+                    // Add the Header height for the target's own category
+                    y_offset += 30;
+                    
+                    // Add the height of the row the target is in within its category
+                    let target_row_within_cat = target_e.row;
+                    y_offset += target_row_within_cat * 54;
+                    
+                    ui.invoke_update_scroll(y_offset as f32);
+                }
+            }
+        }
+    };
+
+    let ui_handle_nav_up = ui.as_weak();
+    ui.on_nav_up(move || move_focus(&ui_handle_nav_up, MoveDir::Up));
+
+    let ui_handle_nav_down = ui.as_weak();
+    ui.on_nav_down(move || move_focus(&ui_handle_nav_down, MoveDir::Down));
+
+    let ui_handle_nav_left = ui.as_weak();
+    ui.on_nav_left(move || move_focus(&ui_handle_nav_left, MoveDir::Left));
+
+    let ui_handle_nav_right = ui.as_weak();
+    ui.on_nav_right(move || move_focus(&ui_handle_nav_right, MoveDir::Right));
+
     let ui_handle_nav = ui.as_weak();
     ui.on_next_item(move || {
         let ui = ui_handle_nav.unwrap();
-        let results = ui.get_results();
-        let max = results.row_count().saturating_sub(1) as i32;
         let current = ui.get_selected_index();
+        let max = match ui.get_active_mode() {
+            AppMode::Root => ui.get_results().row_count().saturating_sub(1) as i32,
+            AppMode::Emoji => {
+                let mut c = 0;
+                let cats = ui.get_emoji_categories();
+                for i in 0..cats.row_count() {
+                    if let Some(cat) = cats.row_data(i) {
+                        c += cat.emojis.row_count();
+                    }
+                }
+                c.saturating_sub(1) as i32
+            },
+            AppMode::Clipboard => ui.get_clipboard_results().row_count().saturating_sub(1) as i32,
+        };
         if current < max {
             ui.set_selected_index(current + 1);
         }
@@ -264,45 +515,82 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
     let ui_handle_exec = ui.as_weak();
     ui.on_execute_selected(move || {
         let ui = ui_handle_exec.unwrap();
-        let results = ui.get_results();
+        let mode = ui.get_active_mode();
         let idx = ui.get_selected_index() as usize;
         
-        if let Some(item) = results.row_data(idx) {
-            println!("Executing: {}", item.exec);
-            
-            let mut clean_exec = item.exec.to_string();
-            // Clean up exec string from field codes like %u, %f before passing it to the OS
-            let codes = ["%f", "%F", "%u", "%U", "%c", "%k", "%i", "%m"];
-            for code in codes {
-                clean_exec = clean_exec.replace(code, "");
-            }
-            clean_exec = clean_exec.trim().to_string();
+        if mode == AppMode::Root {
+            let results = ui.get_results();
+            if let Some(item) = results.row_data(idx) {
+                println!("Executing: {}", item.exec);
+                let mut clean_exec = item.exec.to_string();
+                let codes = ["%f", "%F", "%u", "%U", "%c", "%k", "%i", "%m"];
+                for code in codes { clean_exec = clean_exec.replace(code, ""); }
+                clean_exec = clean_exec.trim().to_string();
 
-            // Spawn the application process
-            if let Err(e) = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&clean_exec)
-                .spawn()
-            {
-                eprintln!("Failed to spawn {}: {}", clean_exec, e);
+                if let Err(e) = std::process::Command::new("sh").arg("-c").arg(&clean_exec).spawn() {
+                    eprintln!("Failed to spawn {}: {}", clean_exec, e);
+                }
+                std::process::exit(0);
             }
-            
-            // Exit the launcher after executing
-            std::process::exit(0);
+        } else if mode == AppMode::Emoji {
+            let mut char_to_copy = None;
+            let cats = ui.get_emoji_categories();
+            for i in 0..cats.row_count() {
+                if let Some(cat) = cats.row_data(i) {
+                    for j in 0..cat.emojis.row_count() {
+                        if let Some(e) = cat.emojis.row_data(j) {
+                            if e.orig_index == idx as i32 {
+                                char_to_copy = Some(e.character.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(c) = char_to_copy {
+                println!("Copying emoji: {}", c);
+                let _ = std::process::Command::new("wl-copy").arg(c).spawn();
+                std::process::exit(0);
+            }
+        } else if mode == AppMode::Clipboard {
+            let results = ui.get_clipboard_results();
+            if let Some(item) = results.row_data(idx) {
+                println!("Copying clipboard item");
+                let _ = std::process::Command::new("wl-copy").arg(&item.content.to_string()).spawn();
+                std::process::exit(0);
+            }
         }
     });
     
     // Spawn hotkey listener
+    let ui_handle_hotkeys = ui.as_weak();
+    let main_id = hotkey_main.id();
+    let emoji_id = hotkey_emoji.id();
+    let clip_id = hotkey_clip.id();
+
     let global_hotkey_channel = GlobalHotKeyEvent::receiver();
-    tokio::spawn(async move {
+    std::thread::spawn(move || {
         loop {
             if let Ok(event) = global_hotkey_channel.try_recv() {
-                if event.id == hotkey.id() {
-                    println!("Hotkey pressed!");
-                    // Toggle visibility logic here
-                }
+                let ui_handle = ui_handle_hotkeys.clone();
+                slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_handle.upgrade() {
+                        if event.id == main_id {
+                            ui.set_active_mode(AppMode::Root);
+                            ui.set_search_text("".into());
+                            ui.invoke_text_changed("".into());
+                        } else if event.id == emoji_id {
+                            ui.set_active_mode(AppMode::Emoji);
+                            ui.set_search_text("".into());
+                            ui.invoke_text_changed("".into());
+                        } else if event.id == clip_id {
+                            ui.set_active_mode(AppMode::Clipboard);
+                            ui.set_search_text("".into());
+                            ui.invoke_text_changed("".into());
+                        }
+                    }
+                }).unwrap();
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     });
 
