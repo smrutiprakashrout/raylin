@@ -1,0 +1,16 @@
+[package]
+name = "wayland-palette"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+freedesktop-desktop-entry = "0.8.1"
+global-hotkey = "0.7.0"
+nucleo = "0.5.0"
+rusqlite = "0.38.0"
+slint = "1.15.1"
+tokio = { version = "1.50.0", features = ["full"] }
+walkdir = "2.5.0"
+
+[build-dependencies]
+slint-build = "1.15.1"

@@ -1,0 +1,176 @@
+import { VerticalBox, HorizontalBox, ScrollView, ListView } from "std-widgets.slint";
+
+export struct SearchResult {
+    name: string,
+    exec: string,
+    icon: image,
+}
+
+export component AppWindow inherits Window {
+    // Input properties
+    in-out property <string> search_text: "";
+    // State properties
+    in property <[SearchResult]> results: [];
+    in-out property <int> selected_index: 0;
+
+    // Callbacks
+    callback text-changed(string);
+    callback item-activated(int);
+    callback next-item();
+    callback prev-item();
+    callback execute-selected();
+
+    no-frame: true;
+    background: transparent;
+    forward-focus: search_input;
+
+    // Chameleon behavior: Base height of 106px (SearchBar 65px + Divider 1px + Footer 40px)
+    // Plus 1px for second divider and dynamic list height
+    height: search_text == "" ? 106px : 107px + min(results.length * 54px, 400px);
+    width: 650px;
+    
+    // Main Container with Glassmorphism and rounded corners
+    Rectangle {
+        border-radius: 12px;
+        background: #1e1e2ee8; // Semi-transparent dark Mocha base
+        border-width: 1px;
+        border-color: #313244;
+        clip: true; // keep corners rounded
+
+        VerticalBox {
+            padding: 0;
+            spacing: 0;
+
+            // Header: Search Bar
+            Rectangle {
+                height: 65px;
+                background: transparent;
+
+                search_input := TextInput {
+                    x: 16px;
+                    y: 16px;
+                    width: parent.width - 32px;
+                    height: 33px;
+                    font-size: 24px;
+                    color: #cdd6f4;
+                    text <=> root.search_text;
+                    single-line: true;
+                    
+                    // Request focus immediately upon mapping
+                    init => {
+                        self.focus();
+                    }
+
+                    edited => {
+                        root.selected_index = 0;
+                        root.text-changed(self.text);
+                    }
+                    accepted => {
+                        root.execute-selected();
+                    }
+                    // Capture Up/Down arrows to navigate natively
+                    key-pressed(event) => {
+                        if (event.text == Key.UpArrow) {
+                            root.selected_index = max(0, root.selected_index - 1);
+                            return accept;
+                        }
+                        if (event.text == Key.DownArrow) {
+                            root.selected_index = min(max(0, root.results.length - 1), root.selected_index + 1);
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+            }
+
+            // Rest of the UI follows
+            Rectangle {
+                height: 1px;
+                background: #313244; // Divider
+            }
+
+            // Middle: Scrollable Results container
+            Rectangle {
+                height: root.search_text == "" ? 0px : min(root.results.length * 54px, 400px);
+                clip: true; // clip ensures it vanishes completely without overflow
+                
+                ScrollView {
+                    height: 100%;
+                    width: 100%;
+                    VerticalBox {
+                        alignment: start;
+                        spacing: 4px;
+
+                        for result[i] in root.results : Rectangle {
+                            height: 50px;
+                            background: i == root.selected_index ? #89b4fa40 : transparent; // Highlight
+                            border-radius: 8px;
+
+                            HorizontalBox {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                
+                                // App Icon
+                            Image {
+                                source: result.icon;
+                                width: 24px;
+                                height: 24px;
+                                vertical-alignment: center;
+                            }
+                            
+                            // App Name
+                            Text {
+                                text: result.name;
+                                color: i == root.selected_index ? #cdd6f4 : #bac2de;
+                                font-size: 16px;
+                                font-weight: i == root.selected_index ? 600 : 400;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        TouchArea {
+                                clicked => {
+                                    root.selected_index = i;
+                                    root.execute-selected();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: root.search_text == "" ? 0px : 1px;
+                background: #313244; // Divider
+                clip: true;
+            }
+
+            // Footer: Commands
+                Rectangle {
+                    height: 40px;
+                    background: #181825c0; // Slightly darker and more transparent
+                    
+                    HorizontalBox {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        
+                        Text {
+                            text: "App Indexer v1 ❄";
+                            color: #a6adc8;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: "Type to Search • Enter to Open";
+                            color: #6c7086;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                    }
+                }
+            }
+        }
+    }
+}
