@@ -15,6 +15,7 @@ export struct SearchResult {
     name: string,
     exec: string,
     icon: image,
+    type_label: string,
 }
 
 export struct EmojiResult {
@@ -258,13 +259,23 @@ export component AppWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                             
-                            // App Name
-                            Text {
+                                // App Name
+                                Text {
                                     text: result.name;
                                     color: i == root.selected_index ? #cdd6f4 : #bac2de;
                                     font-size: 16px;
                                     font-weight: i == root.selected_index ? 600 : 400;
                                     vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+
+                                // App type label (right-aligned, subtle)
+                                Text {
+                                    text: result.type_label;
+                                    color: #45475a;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
                                 }
                             }
 

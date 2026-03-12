@@ -31,120 +31,265 @@ pub struct AppEntry {
     pub name: String,
     pub exec: String,
     pub icon_path: String,
+    pub type_label: String,  // "Application" or "Command Line"
 }
 
-fn resolve_icon_path(icon_name: &str) -> String {
-    if icon_name.is_empty() {
-        return "".to_string();
-    }
-    
-    // If it's already an absolute path (e.g. flatpak overriding), return it
+/// Freedesktop-compliant icon lookup.
+///
+/// Search strategy (first match wins):
+///   1. Absolute path  — used directly if it exists
+///   2. Priority dirs  — specific size/scalable dirs checked without walking (fast path)
+///   3. Theme walk     — WalkDir over icon roots, filtered to `apps/` subdirs (catches
+///                       custom themes, extra sizes, Flatpak per-user installs)
+///   4. Snap           — /snap/<name>/current/meta/gui/icon.*
+///
+/// Extension priority per directory: svg → png → jpg → ico → xpm
+/// (.xpm noted as unsupported by Slint; loader will skip it, but we still surface the path
+///  so the caller can decide.)
+///
+/// Supports reverse-DNS Flatpak names like `org.localsend.localsend_app`.
+pub fn find_icon_path(icon_name: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    if icon_name.is_empty() { return None; }
+
+    // ── 1. Absolute path ────────────────────────────────────────────────────
     if icon_name.starts_with('/') {
-        if Path::new(icon_name).exists() {
-            return icon_name.to_string();
+        let p = PathBuf::from(icon_name);
+        return if p.exists() { Some(p) } else { None };
+    }
+
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // Extension search order — SVG first (vector, scales perfectly), xpm last (unsupported by Slint)
+    let exts: &[&str] = &[".svg", ".png", ".jpg", ".ico", ".xpm", ""];
+
+    // ── 2. Priority dirs (fast path — covers 95% of real-world installs) ────
+    //    Listed from most preferred (largest / scalable) to least preferred.
+    let priority_dirs: Vec<PathBuf> = vec![
+        // User local theme
+        PathBuf::from(format!("{}/.local/share/icons/hicolor/scalable/apps", home)),
+        PathBuf::from(format!("{}/.local/share/icons/hicolor/256x256/apps",  home)),
+        PathBuf::from(format!("{}/.local/share/icons/hicolor/128x128/apps",  home)),
+        PathBuf::from(format!("{}/.local/share/icons/hicolor/64x64/apps",    home)),
+        PathBuf::from(format!("{}/.local/share/icons/hicolor/48x48/apps",    home)),
+        PathBuf::from(format!("{}/.local/share/pixmaps",                     home)),
+        // System hicolor
+        PathBuf::from("/usr/share/icons/hicolor/scalable/apps"),
+        PathBuf::from("/usr/share/icons/hicolor/256x256/apps"),
+        PathBuf::from("/usr/share/icons/hicolor/128x128/apps"),
+        PathBuf::from("/usr/share/icons/hicolor/64x64/apps"),
+        PathBuf::from("/usr/share/icons/hicolor/48x48/apps"),
+        PathBuf::from("/usr/share/icons/hicolor/32x32/apps"),
+        PathBuf::from("/usr/share/pixmaps"),
+        // Flatpak system exports
+        PathBuf::from("/var/lib/flatpak/exports/share/icons/hicolor/scalable/apps"),
+        PathBuf::from("/var/lib/flatpak/exports/share/icons/hicolor/256x256/apps"),
+        PathBuf::from("/var/lib/flatpak/exports/share/icons/hicolor/128x128/apps"),
+        PathBuf::from("/var/lib/flatpak/exports/share/icons/hicolor/48x48/apps"),
+        // Flatpak user exports
+        PathBuf::from(format!("{}/.local/share/flatpak/exports/share/icons/hicolor/scalable/apps", home)),
+        PathBuf::from(format!("{}/.local/share/flatpak/exports/share/icons/hicolor/256x256/apps", home)),
+        PathBuf::from(format!("{}/.local/share/flatpak/exports/share/icons/hicolor/128x128/apps", home)),
+    ];
+
+    for dir in &priority_dirs {
+        if !dir.exists() { continue; }
+        for ext in exts {
+            let candidate = dir.join(format!("{}{}", icon_name, ext));
+            if candidate.exists() { return Some(candidate); }
         }
     }
 
-    let search_paths = vec![
-        "/usr/share/pixmaps",
-        "/usr/share/icons/hicolor/48x48/apps",
-        "/usr/share/icons/hicolor/64x64/apps",
-        "/usr/share/icons/hicolor/128x128/apps",
-        "/usr/share/icons/hicolor/256x256/apps",
-        "/usr/share/icons/hicolor/scalable/apps",
-        "/var/lib/flatpak/exports/share/icons/hicolor/48x48/apps",
-        "/var/lib/flatpak/exports/share/icons/hicolor/64x64/apps",
-        "/var/lib/flatpak/exports/share/icons/hicolor/scalable/apps",
+    // ── 3. Theme walk — catches arbitrary themes and non-standard sizes ──────
+    //    Only descend into directories whose path contains "/apps" segment.
+    let walk_roots: Vec<PathBuf> = vec![
+        PathBuf::from(format!("{}/.local/share/icons", home)),
+        PathBuf::from("/usr/share/icons"),
+        PathBuf::from(format!("{}/.local/share/flatpak/exports/share/icons", home)),
+        PathBuf::from("/var/lib/flatpak/exports/share/icons"),
     ];
 
-    let extensions = [".png", ".svg", ".xpm"];
-
-    for dir in search_paths {
-        for ext in extensions {
-            let path = format!("{}/{}{}", dir, icon_name, ext);
-            if Path::new(&path).exists() {
-                return path;
+    for root in &walk_roots {
+        if !root.exists() { continue; }
+        for entry in WalkDir::new(root)
+            .min_depth(3)   // skip theme root and size-root dirs themselves
+            .max_depth(5)   // theme/size/category — cap depth for performance
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_dir())
+            // Only look in `apps/` subdirectories (the Freedesktop spec location)
+            .filter(|e| e.path().components().any(|c| c.as_os_str() == "apps"))
+        {
+            for ext in exts {
+                let candidate = entry.path().join(format!("{}{}", icon_name, ext));
+                if candidate.exists() { return Some(candidate); }
             }
         }
     }
 
-    "".to_string()
+    // ── 4. Snap ─────────────────────────────────────────────────────────────
+    //    icon_name usually matches the snap package name
+    for ext in [".png", ".svg"] {
+        let p = PathBuf::from(format!("/snap/{}/current/meta/gui/icon{}", icon_name, ext));
+        if p.exists() { return Some(p); }
+    }
+
+    // ── 5. Reverse-DNS alias (Flatpak apps like org.app.Name) ───────────────
+    //    Try the last component as a shorter alias, e.g. "localsend_app" from
+    //    "org.localsend.localsend_app"
+    if icon_name.contains('.') {
+        if let Some(short_name) = icon_name.split('.').last() {
+            if short_name != icon_name {
+                return find_icon_path(short_name);
+            }
+        }
+    }
+
+    None
+}
+
+/// Thin wrapper: returns an empty String when no icon is found (keeps existing call sites).
+fn resolve_icon_path(icon_name: &str) -> String {
+    find_icon_path(icon_name)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Returns true if the binary named by `exec` is findable on PATH or as an absolute path.
+fn binary_exists(exec: &str) -> bool {
+    if exec.is_empty() { return false; }
+    // Absolute path
+    if exec.starts_with('/') {
+        return Path::new(exec).exists();
+    }
+    // Search PATH
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            if Path::new(&format!("{}/{}", dir, exec)).exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Extract the bare binary name from an Exec= value.
+/// Strips: env VAR=val prefixes, %f/%u/etc field codes, surrounding quotes.
+fn parse_exec_binary(exec_raw: &str) -> &str {
+    let mut s = exec_raw.trim();
+
+    // Skip "env" command and VAR=value assignments (e.g. "env FOO=bar /usr/bin/app")
+    loop {
+        if s.starts_with("env ") { s = s[4..].trim(); continue; }
+        if s.contains('=') && !s.contains(' ') { return ""; } // lone VAR=val, no binary
+        let first = s.split_whitespace().next().unwrap_or("");
+        if first.contains('=') { s = &s[first.len()..].trim(); continue; }
+        break;
+    }
+
+    // Take just the first token (the binary name/path)
+    let binary = s.split_whitespace().next().unwrap_or("");
+    // Strip surrounding quotes
+    let binary = binary.trim_matches('"').trim_matches('\'');
+    binary
 }
 
 fn scan_desktop_files() -> Vec<AppEntry> {
-    let mut apps = Vec::new();
+    let mut apps: Vec<AppEntry> = Vec::new();
     let home = std::env::var("HOME").unwrap_or_default();
 
     let search_paths = vec![
         "/usr/share/applications".to_string(),
         format!("{}/.local/share/applications", home),
+        // Flatpak
         "/var/lib/flatpak/exports/share/applications".to_string(),
         format!("{}/.local/share/flatpak/exports/share/applications", home),
+        // Snap
+        "/var/lib/snapd/desktop/applications".to_string(),
     ];
 
-    for path in search_paths {
-        if !Path::new(&path).exists() {
-            continue;
-        }
-        for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
-            if entry.path().extension().map_or(false, |ext| ext == "desktop") {
-                if let Ok(content) = fs::read_to_string(entry.path()) {
-                    let path_buf = entry.path().to_path_buf();
-                    // Provide a strongly typed empty locales filter Option<&[String]>
-                    let no_locales: Option<&[String]> = None;
-                    if let Ok(desktop_entry) = DesktopEntry::from_str(path_buf, &content, no_locales) {
-                        // Skip if NoDisplay or Hidden
-                        if desktop_entry.no_display() || desktop_entry.hidden() {
-                            continue;
-                        }
+    for search_path in search_paths {
+        if !Path::new(&search_path).exists() { continue; }
 
-                        let empty_locales: &[String] = &[];
-                        
-                        // Strict strict Name parsing: search the file content directly for the actual `Name=` or `Name[en_US]=` key.
-                        // We do this because the `freedesktop-desktop-entry` crate sometimes falls back to the file name which breaks the UI requirement.
-                        let mut exact_name = String::new();
-                        for line in content.lines() {
-                            if line.starts_with("Name=") {
-                                exact_name = line.trim_start_matches("Name=").to_string();
-                                break;
-                            } else if line.starts_with("Name[en_US]=") {
-                                exact_name = line.trim_start_matches("Name[en_US]=").to_string();
-                            } else if exact_name.is_empty() && line.starts_with("Name[en]=") {
-                                exact_name = line.trim_start_matches("Name[en]=").to_string();
-                            }
-                        }
+        for entry in WalkDir::new(&search_path).into_iter().filter_map(Result::ok) {
+            if !entry.path().extension().map_or(false, |e| e == "desktop") { continue; }
 
-                        // Fallback purely to crate string ONLY if absolutely necessary and strip extensions
-                        let mut pretty_name = if !exact_name.is_empty() {
-                            exact_name
-                        } else {
-                            desktop_entry.name(empty_locales).map(|c| c.to_string()).unwrap_or_else(|| "Unknown".to_string())
-                        };
-                        
-                        // Sanitize weird edge cases if freedesktop-crate returns the .desktop extension
-                        if pretty_name.ends_with(".desktop") {
-                            pretty_name = pretty_name.replace(".desktop", "");
-                        }
+            let Ok(content) = fs::read_to_string(entry.path()) else { continue };
+            let path_buf = entry.path().to_path_buf();
+            let no_locales: Option<&[String]> = None;
+            let Ok(de) = DesktopEntry::from_str(path_buf, &content, no_locales) else { continue };
 
-                        let mut exec = desktop_entry.exec().unwrap_or("").to_string();
-                        let icon_raw = desktop_entry.icon().unwrap_or("application-x-executable").to_string();
-                        let icon_path = resolve_icon_path(&icon_raw);
+            // ── Visibility filters ──────────────────────────────────────────
+            if de.no_display() || de.hidden() { continue; }
 
-                        // Clean up exec string from %f, %U, etc.
-                        exec = exec.replace("%f", "").replace("%F", "").replace("%u", "").replace("%U", "").trim().to_string();
-                        
-                        if !pretty_name.is_empty() && !exec.is_empty() {
-                            apps.push(AppEntry {
-                                name: pretty_name,
-                                exec,
-                                icon_path,
-                            });
-                        }
-                    }
+            // OnlyShowIn: skip if present and doesn't include common DEs
+            // (freedesktop crate exposes this as a raw string)
+            let only_show = content.lines()
+                .find(|l| l.starts_with("OnlyShowIn="))
+                .map(|l| l.trim_start_matches("OnlyShowIn="));
+            if let Some(only) = only_show {
+                // Accept if any of our preferred environments are listed
+                let accepted = ["GNOME", "KDE", "sway", "Hyprland", "wlroots", "X-"];
+                if !accepted.iter().any(|de_name| only.contains(de_name)) {
+                    continue;
                 }
+            }
+
+            // ── Name ────────────────────────────────────────────────────────
+            let mut name = String::new();
+            for line in content.lines() {
+                if line.starts_with("Name=") {
+                    name = line.trim_start_matches("Name=").to_string();
+                    break;
+                } else if line.starts_with("Name[en_US]=") && name.is_empty() {
+                    name = line.trim_start_matches("Name[en_US]=").to_string();
+                } else if line.starts_with("Name[en]=") && name.is_empty() {
+                    name = line.trim_start_matches("Name[en]=").to_string();
+                }
+            }
+            if name.is_empty() {
+                name = de.name(&[] as &[String])
+                    .map(|c| c.to_string())
+                    .unwrap_or_default();
+            }
+            name = name.replace(".desktop", "");
+            if name.is_empty() { continue; }
+
+            // ── Exec validation ─────────────────────────────────────────────
+            let exec_raw = de.exec().unwrap_or("").to_string();
+            let exec_clean = exec_raw
+                .replace("%f", "").replace("%F", "")
+                .replace("%u", "").replace("%U", "")
+                .replace("%d", "").replace("%D", "")
+                .replace("%n", "").replace("%N", "")
+                .replace("%i", "").replace("%c", "")
+                .replace("%k", "").replace("%v", "").replace("%m", "")
+                .trim().to_string();
+
+            if exec_clean.is_empty() { continue; }
+
+            let binary = parse_exec_binary(&exec_clean);
+            if binary.is_empty() || !binary_exists(binary) { continue; }
+
+            // ── Terminal / type classification ────────────────────────────
+            let is_terminal = content.lines()
+                .find(|l| l.starts_with("Terminal="))
+                .map(|l| l.trim_start_matches("Terminal=").trim().eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            let type_label = if is_terminal { "Command Line" } else { "Application" }.to_string();
+
+            // ── Icon ─────────────────────────────────────────────────────────
+            let icon_raw = de.icon().unwrap_or("application-x-executable").to_string();
+            let icon_path = resolve_icon_path(&icon_raw);
+
+            // ── Deduplication by name (first occurrence / more specific wins) ─
+            if !apps.iter().any(|a| a.name.eq_ignore_ascii_case(&name)) {
+                apps.push(AppEntry { name, exec: exec_clean, icon_path, type_label });
             }
         }
     }
+
     apps
 }
 
@@ -298,10 +443,26 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
             let count = snapshot.matched_item_count().min(8);
             for i in 0..count {
                 if let Some(item) = snapshot.get_matched_item(i) {
-                    let slint_image = if !item.data.icon_path.is_empty() {
-                        if let Ok(image) = slint::Image::load_from_path(std::path::Path::new(&item.data.icon_path)) { image } else { slint::Image::default() }
-                    } else { slint::Image::default() };
-                    results.push(SearchResult { name: item.data.name.clone().into(), exec: item.data.exec.clone().into(), icon: slint_image });
+                    // Safely load the icon, skipping .xpm (Slint backends don't support it).
+                    // Any other load failure falls back to a blank default icon.
+                    let slint_image = {
+                        let path = &item.data.icon_path;
+                        let is_xpm = path.ends_with(".xpm");
+                        if !path.is_empty() && !is_xpm {
+                            match slint::Image::load_from_path(std::path::Path::new(path)) {
+                                Ok(img) => img,
+                                Err(_) => slint::Image::default(), // corrupted / unsupported format
+                            }
+                        } else {
+                            slint::Image::default() // .xpm or no icon
+                        }
+                    };
+                    results.push(SearchResult {
+                        name: item.data.name.clone().into(),
+                        exec: item.data.exec.clone().into(),
+                        icon: slint_image,
+                        type_label: item.data.type_label.clone().into(),
+                    });
                 }
             }
             ui.set_results(Rc::new(VecModel::from(results)).into());
