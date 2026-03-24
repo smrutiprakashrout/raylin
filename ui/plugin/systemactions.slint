@@ -1,0 +1,299 @@
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { AppMode } from "../types.slint";
+
+global SystemActions {
+    out property <[string]> ids:    ["logout","togglednd","restart","suspend","poweroff"];
+    out property <[string]> labels: ["Logout","Toggle DND","Restart","Suspend","Power Off"];
+    out property <[string]> icons:  ["🚪","🔕","🔁","⏸","⏻"];
+}
+
+export component SystemActionsView {
+    in property <bool> active: false;
+
+    // Local state
+    private property <int> sel_action: 0;
+    out property <bool> show_confirm: false;
+    private property <string> pending_action: "";
+    private property <string> pending_label: "";
+
+    callback pop-mode();
+    callback execute-system-action(string);
+
+    public function focus_system() { system_focus.focus(); }
+
+    Rectangle {
+        height: root.active ? 258px : 0px;
+        clip: true;
+        width: 100%;
+
+        system_focus := FocusScope {
+            width: 100%;
+            height: 100%;
+
+            key-pressed(event) => {
+                // Alt+Left → back to root
+                if (event.text == Key.LeftArrow && event.modifiers.alt) {
+                    root.sel_action = 0;
+                    root.pop-mode();
+                    return accept;
+                }
+                // Escape → back to root
+                if (event.text == Key.Escape) {
+                    if (root.show_confirm) {
+                        root.show_confirm = false;
+                    } else {
+                        root.sel_action = 0;
+                        root.pop-mode();
+                    }
+                    return accept;
+                }
+                // Arrow navigation — layout: row0=[0,1,2] row1=[3,4]
+                if (event.text == Key.LeftArrow) {
+                    if (root.sel_action == 4) { root.sel_action = 3; }
+                    else if (root.sel_action > 0 && !root.show_confirm) { root.sel_action = root.sel_action - 1; }
+                    return accept;
+                }
+                if (event.text == Key.RightArrow) {
+                    if (root.sel_action == 3) { root.sel_action = 4; }
+                    else if (root.sel_action < 4 && !root.show_confirm) { root.sel_action = root.sel_action + 1; }
+                    return accept;
+                }
+                if (event.text == Key.UpArrow) {
+                    if (root.sel_action >= 3 && !root.show_confirm) { root.sel_action = root.sel_action - 3; }
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    if (root.sel_action < 3 && !root.show_confirm) { root.sel_action = min(root.sel_action + 3, 4); }
+                    return accept;
+                }
+                // Enter → confirm
+                if (event.text == Key.Return) {
+                    if (root.show_confirm) {
+                        root.show_confirm = false;
+                        root.execute-system-action(root.pending_action);
+                    } else {
+                        root.pending_action = SystemActions.ids[root.sel_action];
+                        root.pending_label  =
+                            root.sel_action == 0 ? "Execute Logout?" :
+                            root.sel_action == 1 ? "Execute Toggle DND?" :
+                            root.sel_action == 2 ? "Execute Restart?" :
+                            root.sel_action == 3 ? "Execute Suspend?" :
+                            "Execute Power Off?";
+                        root.show_confirm   = true;
+                    }
+                    return accept;
+                }
+                return reject;
+            }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                background: transparent;
+
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+                    alignment: center;
+
+                    // Row 1
+                    HorizontalBox {
+                        spacing: 12px;
+                        alignment: center;
+
+                        Rectangle {
+                            width: 172px; height: 90px;
+                            background: root.sel_action == 0 ? #2a3f5f : #1e293b;
+                            border-radius: 12px;
+                            border-width: root.sel_action == 0 ? 2px : 1px;
+                            border-color: root.sel_action == 0 ? #89b4fa : #334155;
+                            VerticalBox {
+                                alignment: center; spacing: 6px;
+                                Text { text: "🚪"; font-size: 32px; horizontal-alignment: center; }
+                                Text { text: "Logout"; font-size: 14px; font-weight: 600; color: #cdd6f4; horizontal-alignment: center; }
+                            }
+                            TouchArea {
+                                clicked => {
+                                    root.sel_action = 0;
+                                    root.pending_action = "logout";
+                                    root.pending_label  = "Execute Logout?";
+                                    root.show_confirm   = true;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 172px; height: 90px;
+                            background: root.sel_action == 1 ? #2a3f5f : #1e293b;
+                            border-radius: 12px;
+                            border-width: root.sel_action == 1 ? 2px : 1px;
+                            border-color: root.sel_action == 1 ? #89b4fa : #334155;
+                            VerticalBox {
+                                alignment: center; spacing: 6px;
+                                Text { text: "🔕"; font-size: 32px; horizontal-alignment: center; }
+                                Text { text: "Toggle DND"; font-size: 14px; font-weight: 600; color: #cdd6f4; horizontal-alignment: center; }
+                            }
+                            TouchArea {
+                                clicked => {
+                                    root.sel_action = 1;
+                                    root.pending_action = "togglednd";
+                                    root.pending_label  = "Execute Toggle DND?";
+                                    root.show_confirm   = true;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 172px; height: 90px;
+                            background: root.sel_action == 2 ? #2a3f5f : #1e293b;
+                            border-radius: 12px;
+                            border-width: root.sel_action == 2 ? 2px : 1px;
+                            border-color: root.sel_action == 2 ? #89b4fa : #334155;
+                            VerticalBox {
+                                alignment: center; spacing: 6px;
+                                Text { text: "🔁"; font-size: 32px; horizontal-alignment: center; }
+                                Text { text: "Restart"; font-size: 14px; font-weight: 600; color: #cdd6f4; horizontal-alignment: center; }
+                            }
+                            TouchArea {
+                                clicked => {
+                                    root.sel_action = 2;
+                                    root.pending_action = "restart";
+                                    root.pending_label  = "Execute Restart?";
+                                    root.show_confirm   = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Row 2
+                    HorizontalBox {
+                        spacing: 12px;
+                        alignment: center;
+
+                        Rectangle {
+                            width: 260px; height: 90px;
+                            background: root.sel_action == 3 ? #2a3f5f : #1e293b;
+                            border-radius: 12px;
+                            border-width: root.sel_action == 3 ? 2px : 1px;
+                            border-color: root.sel_action == 3 ? #89b4fa : #334155;
+                            VerticalBox {
+                                alignment: center; spacing: 6px;
+                                Text { text: "⏸"; font-size: 32px; horizontal-alignment: center; }
+                                Text { text: "Suspend"; font-size: 14px; font-weight: 600; color: #cdd6f4; horizontal-alignment: center; }
+                            }
+                            TouchArea {
+                                clicked => {
+                                    root.sel_action = 3;
+                                    root.pending_action = "suspend";
+                                    root.pending_label  = "Execute Suspend?";
+                                    root.show_confirm   = true;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 260px; height: 90px;
+                            background: root.sel_action == 4 ? #5f1a1a : #2d1b1b;
+                            border-radius: 12px;
+                            border-width: root.sel_action == 4 ? 2px : 1px;
+                            border-color: root.sel_action == 4 ? #f87171 : #7f1d1d;
+                            VerticalBox {
+                                alignment: center; spacing: 6px;
+                                Text { text: "⏻"; font-size: 32px; horizontal-alignment: center; }
+                                Text { text: "Power Off"; font-size: 14px; font-weight: 600; color: #f87171; horizontal-alignment: center; }
+                            }
+                            TouchArea {
+                                clicked => {
+                                    root.sel_action = 4;
+                                    root.pending_action = "poweroff";
+                                    root.pending_label  = "Execute Power Off?";
+                                    root.show_confirm   = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Overlay for confirmation dialog
+        if root.show_confirm: Rectangle {
+            background: #000000b0;
+            width: 100%;
+            height: 100%;
+
+            Rectangle {
+                x: (parent.width - 360px) / 2;
+                y: (parent.height - 160px) / 2;
+                width: 360px;
+                height: 160px;
+                background: #24273a;
+                border-radius: 14px;
+                border-width: 1px;
+                border-color: #45475a;
+
+                VerticalBox {
+                    padding: 24px;
+                    spacing: 20px;
+                    alignment: center;
+
+                    Text {
+                        text: root.pending_label;
+                        font-size: 17px;
+                        font-weight: 700;
+                        color: #cdd6f4;
+                        horizontal-alignment: center;
+                    }
+
+                    HorizontalBox {
+                        spacing: 16px;
+                        alignment: center;
+
+                        Rectangle {
+                            width: 130px;
+                            height: 40px;
+                            background: #313244;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #45475a;
+                            Text {
+                                text: "Cancel";
+                                color: #a6adc8;
+                                font-size: 14px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => { root.show_confirm = false; }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 130px;
+                            height: 40px;
+                            background: root.pending_action == "poweroff" ? #7f1d1d : #1e3a5f;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: root.pending_action == "poweroff" ? #f87171 : #89b4fa;
+                            Text {
+                                text: "Apply";
+                                color: root.pending_action == "poweroff" ? #f87171 : #89b4fa;
+                                font-size: 14px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => {
+                                    root.show_confirm = false;
+                                    root.execute-system-action(root.pending_action);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

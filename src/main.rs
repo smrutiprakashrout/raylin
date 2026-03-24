@@ -305,24 +305,12 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
 
     // ── 9. System action execution ────────────────────────────────────────────
     let ui_sys = ui.as_weak();
+    let sys_plugin = std::rc::Rc::new(plugins::systemactions::SystemActionsPlugin::new());
     ui.on_execute_system_action(move |action| {
-        println!("[system] Action: {}", action);
-        // Close the launcher first, then run the command
         if let Some(ui) = ui_sys.upgrade() {
             ui.hide().ok();
         }
-        let cmd: &str = match action.as_str() {
-            "logout"   => "loginctl terminate-session ${XDG_SESSION_ID}",
-            "togglednd"=> "if command -v swaync-client >/dev/null 2>&1; then swaync-client -d; elif command -v makoctl >/dev/null 2>&1; then makoctl mode -t dnd; elif command -v gsettings >/dev/null 2>&1; then if [ \"$(gsettings get org.gnome.desktop.notifications show-banners)\" = \"true\" ]; then gsettings set org.gnome.desktop.notifications show-banners false; else gsettings set org.gnome.desktop.notifications show-banners true; fi; fi",
-            "restart"  => "systemctl reboot",
-            "suspend"  => "systemctl suspend",
-            "poweroff" => "systemctl poweroff",
-            _          => return,
-        };
-        if let Err(e) = std::process::Command::new("sh").arg("-c").arg(cmd).spawn() {
-            eprintln!("[system] Failed to run '{}': {}", cmd, e);
-        }
-        std::process::exit(0);
+        sys_plugin.execute_action(action.as_str());
     });
 
     // ── 10. Global hotkey listener thread ────────────────────────────────────

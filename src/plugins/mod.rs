@@ -80,3 +80,4 @@ impl PluginRegistry {
 pub mod app_launcher;
 pub mod emoji;
 pub mod clipboard_history;
+pub mod systemactions;
