@@ -1,55 +1,40 @@
+import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+
 import {
-    VerticalBox,
-    HorizontalBox,
-    ScrollView,
-    ListView,
-} from "std-widgets.slint";
+    AppMode,
+    SearchResult,
+    EmojiResult,
+    EmojiCategory,
+    ClipboardResult,
+} from "types.slint";
 
-export enum AppMode {
-    Root,
-    Emoji,
-    Clipboard,
-}
+export { AppMode, SearchResult, EmojiResult, EmojiCategory, ClipboardResult }
 
-export struct SearchResult {
-    name: string,
-    exec: string,
-    icon: image,
-    type_label: string,
-}
-
-export struct EmojiResult {
-    character: string,
-    name: string,
-    row: int,
-    col: int,
-    orig_index: int,
-}
-
-export struct EmojiCategory {
-    name: string,
-    count: int,
-    emojis: [EmojiResult],
-}
-
-export struct ClipboardResult {
-    content: string,
+// Actions order: 0=Logout  1=Toggle DND  2=Restart  3=Suspend  4=PowerOff
+global SystemActions {
+    out property <[string]> ids:    ["logout","togglednd","restart","suspend","poweroff"];
+    out property <[string]> labels: ["Logout","Toggle DND","Restart","Suspend","Power Off"];
+    out property <[string]> icons:  ["🚪","🔕","🔁","⏸","⏻"];
 }
 
 export component AppWindow inherits Window {
-    // Input properties
-    in-out property <string> search_text: "";
-    // State properties
-    in-out property <AppMode> active_mode: AppMode.Root;
-    in property <[SearchResult]> results: [];
-    in property <[EmojiCategory]> emoji_categories: [];
-    in property <[ClipboardResult]> clipboard_results: [];
-    in-out property <int> selected_index: 0;
-    in-out property <length> current_scroll_y: 0px;
-    // Which category group to show in the single-category emoji view (0-based)
-    in-out property <int> current_group_index: 0;
+    // ── State ─────────────────────────────────────────────────────────────────
+    in-out property <string>            search_text:         "";
+    in-out property <AppMode>           active_mode:         AppMode.Root;
+    in     property <[SearchResult]>    results:             [];
+    in     property <[EmojiCategory]>   emoji_categories:    [];
+    in     property <[ClipboardResult]> clipboard_results:   [];
+    in-out property <int>               selected_index:      0;
+    in-out property <length>            current_scroll_y:    0px;
+    in-out property <int>               current_group_index: 0;
 
-    // Callbacks
+    // System Actions local state
+    private property <int>    sel_action: 0;   // 0-4 currently focused button
+    private property <bool>   show_confirm: false;
+    private property <string> pending_action: "";
+    private property <string> pending_label:  "";
+
+    // ── Callbacks ─────────────────────────────────────────────────────────────
     callback text-changed(string);
     callback item-activated(int);
     callback next-item();
@@ -61,42 +46,53 @@ export component AppWindow inherits Window {
     callback nav-left();
     callback nav-right();
     callback update-scroll(float);
-    callback cycle-group();  // Ctrl+T → next category group
+    callback cycle-group();
+    callback execute-system-action(string);
 
+    public function focus_system() { system_focus.focus(); }
+    public function focus_search() { search_input.focus(); }
+
+    // ── Window sizing ─────────────────────────────────────────────────────────
     no-frame: true;
     background: transparent;
-    forward-focus: search_input;
+    // forward-focus handled by inner FocusScopes
 
-    // Chameleon behavior: Base height of 106px
-    // Variable list heights depending on mode
-    property <length> list_height: root.active_mode == AppMode.Root ? min(results.length * 54px, 400px) : root.active_mode == AppMode.Emoji ? 400px : // Keep fixed size for FlowLayout scrolling
-                                   min(clipboard_results.length * 54px, 400px);
+    property <bool> is_system: root.active_mode == AppMode.SystemActions;
 
-    height: search_text == "" && root.active_mode == AppMode.Root ? 106px : 107px + list_height;
+    property <length> list_height:
+        root.active_mode == AppMode.Root      ? min(results.length * 54px, 400px) :
+        root.active_mode == AppMode.Emoji     ? 400px :
+        root.active_mode == AppMode.SystemActions ? 260px :
+        min(clipboard_results.length * 54px, 400px);
+
+    height: is_system ? 350px :
+            search_text == "" && root.active_mode == AppMode.Root ? 106px
+            : 107px + list_height;
     width: 650px;
-    
-    // Main Container with Glassmorphism and rounded corners
+
+    // ── Main container ────────────────────────────────────────────────────────
     Rectangle {
         border-radius: 12px;
-        background: #1e1e2ef3; // Semi-transparent dark Mocha base
+        background: #1e1e2ef3;
         border-width: 1px;
         border-color: #313244;
-        clip: true; // keep corners rounded
+        clip: true;
 
         VerticalBox {
             padding: 0;
             spacing: 0;
 
-            // Header: Search Bar
+            // ── Header: search bar (hidden in System Actions mode) ────────────
             Rectangle {
-                height: 65px;
+                height: is_system ? 0px : 65px;
+                clip: true;
                 background: transparent;
 
                 HorizontalBox {
                     padding: 0;
                     spacing: 0;
 
-                    // Conditional Back Button
+                    // Back button
                     if root.active_mode != AppMode.Root: Rectangle {
                         width: 48px;
                         height: 65px;
@@ -109,17 +105,14 @@ export component AppWindow inherits Window {
                             width: 100%;
                             height: 100%;
                         }
-
-                        TouchArea {
-                            clicked => {
-                                root.pop-mode();
-                            }
-                        }
+                        TouchArea { clicked => { root.pop-mode(); } }
                     }
 
-                    // Search icon — always visible, vertically centred
+                    // Mode icon
                     Text {
-                        text: root.active_mode == AppMode.Emoji ? "😀" : root.active_mode == AppMode.Clipboard ? "📋" : "🔍";
+                        text: root.active_mode == AppMode.Emoji     ? "😀"
+                            : root.active_mode == AppMode.Clipboard  ? "📋"
+                            : "🔍";
                         font-size: 20px;
                         width: 44px;
                         height: 65px;
@@ -127,9 +120,11 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                     }
 
-                    // Input area: TextInput + simulated placeholder overlay
+                    // Input area
                     Rectangle {
-                        width: parent.width - 44px - (root.active_mode != AppMode.Root ? 48px : 0px) - 16px;
+                        width: parent.width - 44px
+                            - (root.active_mode != AppMode.Root ? 48px : 0px)
+                            - 16px;
                         height: 65px;
 
                         search_input := TextInput {
@@ -141,75 +136,62 @@ export component AppWindow inherits Window {
                             text <=> root.search_text;
                             single-line: true;
 
-                            // Request focus immediately upon mapping
-                            init => {
-                                self.focus();
-                            }
-
+                            init => { self.focus(); }
                             edited => {
                                 root.selected_index = 0;
                                 root.text-changed(self.text);
                             }
-                            accepted => {
-                                root.execute-selected();
-                            }
+                            accepted => { root.execute-selected(); }
 
                             key-pressed(event) => {
+                                // Alt+Left → pop to root from any mode
+                                if (event.text == Key.LeftArrow && event.modifiers.alt) {
+                                    root.pop-mode();
+                                    return accept;
+                                }
                                 if (event.text == Key.Escape) {
                                     if (root.active_mode != AppMode.Root) {
                                         root.pop-mode();
                                         return accept;
-                                    } else {
-                                        return reject;
                                     }
+                                    return reject;
                                 }
                                 if (event.text == Key.UpArrow) {
-                                    if (root.active_mode == AppMode.Emoji) {
-                                        root.nav-up();
-                                    } else {
-                                        root.selected_index = max(0, root.selected_index - 1);
-                                    }
+                                    if (root.active_mode == AppMode.Emoji) { root.nav-up(); }
+                                    else { root.selected_index = max(0, root.selected_index - 1); }
                                     return accept;
                                 }
                                 if (event.text == Key.DownArrow) {
-                                    if (root.active_mode == AppMode.Emoji) {
-                                        root.nav-down();
-                                    } else {
-                                        let max_idx = root.active_mode == AppMode.Root ? max(0, root.results.length - 1) : max(0, root.clipboard_results.length - 1);
+                                    if (root.active_mode == AppMode.Emoji) { root.nav-down(); }
+                                    else {
+                                        let max_idx = root.active_mode == AppMode.Root
+                                            ? max(0, root.results.length - 1)
+                                            : max(0, root.clipboard_results.length - 1);
                                         root.selected_index = min(max_idx, root.selected_index + 1);
                                     }
                                     return accept;
                                 }
-                                if (event.text == Key.LeftArrow) {
-                                    if (root.active_mode == AppMode.Emoji) {
-                                        root.nav-left();
-                                        return accept;
-                                    }
+                                if (event.text == Key.LeftArrow && root.active_mode == AppMode.Emoji) {
+                                    root.nav-left(); return accept;
                                 }
-                                if (event.text == Key.RightArrow) {
-                                    if (root.active_mode == AppMode.Emoji) {
-                                        root.nav-right();
-                                        return accept;
-                                    }
+                                if (event.text == Key.RightArrow && root.active_mode == AppMode.Emoji) {
+                                    root.nav-right(); return accept;
                                 }
-                                // Ctrl+T → cycle to next emoji category group
-                                if (event.text == "t" && event.modifiers.control) {
-                                    if (root.active_mode == AppMode.Emoji) {
-                                        root.cycle-group();
-                                        return accept;
-                                    }
+                                if (event.text == "t" && event.modifiers.control
+                                        && root.active_mode == AppMode.Emoji) {
+                                    root.cycle-group(); return accept;
                                 }
                                 return reject;
                             }
                         }
 
-                        // Simulated placeholder: shown when search text is empty
+                        // Placeholder
                         if root.search_text == "": Text {
-                            x: 0;
-                            y: 0;
-                            width: 100%;
-                            height: 100%;
-                            text: root.active_mode == AppMode.Emoji ? "Search Emoji..." : root.active_mode == AppMode.Clipboard ? "Search Clipboard..." : "Type to Search...";
+                            x: 0; y: 0;
+                            width: 100%; height: 100%;
+                            text: root.active_mode == AppMode.Emoji      ? "Search Emoji..."
+                                : root.active_mode == AppMode.Clipboard  ? "Search Clipboard..."
+                                : "Type to Search...";
                             color: #45475a;
                             font-size: 22px;
                             vertical-alignment: center;
@@ -218,48 +200,73 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // Rest of the UI follows
-            Rectangle {
-                height: 1px;
-                background: #313244; // Divider
+            // ── System Actions header (replaces search bar) ───────────────────
+            if is_system: Rectangle {
+                height: 52px;
+                background: transparent;
+                HorizontalBox {
+                    padding-left: 18px;
+                    padding-right: 18px;
+                    spacing: 10px;
+                    Text { text: "⚡"; font-size: 20px; vertical-alignment: center; }
+                    Text {
+                        text: "System Actions";
+                        font-size: 18px;
+                        font-weight: 700;
+                        color: #cdd6f4;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "↑↓←→ Navigate • Enter Confirm • Alt← Back";
+                        font-size: 11px;
+                        color: #45475a;
+                        vertical-alignment: center;
+                    }
+                }
             }
 
-            // Middle: Scrollable Results container
+            // Divider
+            Rectangle { height: 1px; background: #313244; }
+
+            // ── Scrollable results (kept always for scroll id scope) ───────────
             Rectangle {
-                height: search_text == "" && root.active_mode == AppMode.Root ? 0px : root.list_height;
-                clip: true; // clip ensures it vanishes completely without overflow
-                
+                height: is_system ? 0px :
+                    search_text == "" && root.active_mode == AppMode.Root
+                    ? 0px : root.list_height;
+                clip: true;
+
                 scroll := ScrollView {
                     height: 100%;
-                    width: 100%;
-                    // viewport-height tells the ScrollView how tall the content is so the scrollbar appears.
-                    // For emoji mode we estimate: each category ~400px; for lists: row count * 54px.
-                    viewport-height: root.active_mode == AppMode.Emoji ? max(root.list_height + 1px, root.emoji_categories.length * 400px) : root.active_mode == AppMode.Root ? root.results.length * 54px : root.clipboard_results.length * 54px;
-                    
-                    // APP SEARCH UI
+                    width:  100%;
+                    viewport-height:
+                        root.active_mode == AppMode.Emoji
+                            ? max(root.list_height + 1px, root.emoji_categories.length * 400px)
+                        : root.active_mode == AppMode.Root
+                            ? root.results.length * 54px
+                        : root.clipboard_results.length * 54px;
+
+                    // APP SEARCH
                     if root.active_mode == AppMode.Root: VerticalBox {
                         alignment: start;
                         spacing: 4px;
 
                         for result[i] in root.results: Rectangle {
                             height: 50px;
-                            background: i == root.selected_index ? #89b4fa40 : transparent; // Highlight
+                            background: i == root.selected_index ? #89b4fa40 : transparent;
                             border-radius: 8px;
 
                             HorizontalBox {
                                 padding-left: 12px;
                                 padding-right: 12px;
                                 spacing: 12px;
-                                
-                                // App Icon
-                            Image {
+
+                                Image {
                                     source: result.icon;
                                     width: 24px;
                                     height: 24px;
                                     vertical-alignment: center;
                                 }
-                            
-                                // App Name
                                 Text {
                                     text: result.name;
                                     color: i == root.selected_index ? #cdd6f4 : #bac2de;
@@ -268,8 +275,6 @@ export component AppWindow inherits Window {
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                 }
-
-                                // App type label (right-aligned, subtle)
                                 Text {
                                     text: result.type_label;
                                     color: #9fa4d1;
@@ -278,7 +283,6 @@ export component AppWindow inherits Window {
                                     horizontal-alignment: right;
                                 }
                             }
-
                             TouchArea {
                                 clicked => {
                                     root.selected_index = i;
@@ -288,21 +292,19 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // EMOJI UI — single-category view, Ctrl+T cycles groups
+                    // EMOJI
                     if root.active_mode == AppMode.Emoji: VerticalBox {
                         alignment: start;
                         padding-top: 12px;
                         padding-bottom: 16px;
                         spacing: 12px;
 
-                        // ── Group badge: name pill + counter + Ctrl+T hint ──
                         HorizontalBox {
                             padding-left: 14px;
                             padding-right: 14px;
                             alignment: start;
                             spacing: 10px;
 
-                            // Active group name pill
                             Rectangle {
                                 border-radius: 6px;
                                 background: #313244;
@@ -311,7 +313,8 @@ export component AppWindow inherits Window {
                                     padding-left: 10px;
                                     padding-right: 10px;
                                     Text {
-                                        text: root.emoji_categories.length > 0 ? root.emoji_categories[root.current_group_index].name : "";
+                                        text: root.emoji_categories.length > 0
+                                            ? root.emoji_categories[root.current_group_index].name : "";
                                         color: #cdd6f4;
                                         font-size: 13px;
                                         font-weight: 700;
@@ -320,7 +323,6 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            // Emoji count badge
                             Rectangle {
                                 border-radius: 6px;
                                 background: #1e1e2e;
@@ -329,7 +331,8 @@ export component AppWindow inherits Window {
                                     padding-left: 8px;
                                     padding-right: 8px;
                                     Text {
-                                        text: root.emoji_categories.length > 0 ? root.emoji_categories[root.current_group_index].count : "";
+                                        text: root.emoji_categories.length > 0
+                                            ? root.emoji_categories[root.current_group_index].count : "";
                                         color: #6c7086;
                                         font-size: 13px;
                                         vertical-alignment: center;
@@ -337,12 +340,8 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            // Spacer
-                            Rectangle {
-                                horizontal-stretch: 1;
-                            }
+                            Rectangle { horizontal-stretch: 1; }
 
-                            // Ctrl+T hint
                             Text {
                                 text: "Ctrl+T to switch";
                                 color: #45475a;
@@ -351,12 +350,11 @@ export component AppWindow inherits Window {
                             }
                         }
 
-                        // ── Active category grid ──
                         if root.emoji_categories.length > 0: Rectangle {
                             height: ceil(root.emoji_categories[root.current_group_index].emojis.length / 7) * 85px;
 
                             for result[i] in root.emoji_categories[root.current_group_index].emojis: Rectangle {
-                                x: (mod(i, 7)) * 90px + 10px;
+                                x: mod(i, 7) * 90px + 10px;
                                 y: floor(i / 7) * 85px;
                                 width: 75px;
                                 height: 75px;
@@ -374,7 +372,6 @@ export component AppWindow inherits Window {
                                     width: 100%;
                                     height: 100%;
                                 }
-
                                 TouchArea {
                                     clicked => {
                                         root.selected_index = result.orig_index;
@@ -385,7 +382,7 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // CLIPBOARD UI
+                    // CLIPBOARD
                     if root.active_mode == AppMode.Clipboard: VerticalBox {
                         alignment: start;
                         spacing: 4px;
@@ -408,7 +405,6 @@ export component AppWindow inherits Window {
                                     overflow: elide;
                                 }
                             }
-
                             TouchArea {
                                 clicked => {
                                     root.selected_index = i;
@@ -420,29 +416,234 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // ── System Actions grid with integrated FocusScope for keyboard nav ─
             Rectangle {
-                height: root.search_text == "" ? 0px : 1px;
-                background: #313244; // Divider
+                height: is_system ? 258px : 0px;
+                clip: true;
+                width: 100%;
+
+                system_focus := FocusScope {
+                    width: 100%;
+                    height: 100%;
+
+                    key-pressed(event) => {
+                        // Alt+Left → back to root
+                        if (event.text == Key.LeftArrow && event.modifiers.alt) {
+                            root.sel_action = 0;
+                            root.pop-mode();
+                            return accept;
+                        }
+                        // Escape → back to root
+                    if (event.text == Key.Escape) {
+                        if (root.show_confirm) {
+                            root.show_confirm = false;
+                        } else {
+                            root.sel_action = 0;
+                            root.pop-mode();
+                        }
+                        return accept;
+                    }
+                    // Arrow navigation — layout: row0=[0,1,2] row1=[3,4]
+                    if (event.text == Key.LeftArrow) {
+                        if (root.sel_action == 4) { root.sel_action = 3; }
+                        else if (root.sel_action > 0 && !root.show_confirm) { root.sel_action = root.sel_action - 1; }
+                        return accept;
+                    }
+                    if (event.text == Key.RightArrow) {
+                        if (root.sel_action == 3) { root.sel_action = 4; }
+                        else if (root.sel_action < 4 && !root.show_confirm) { root.sel_action = root.sel_action + 1; }
+                        return accept;
+                    }
+                    if (event.text == Key.UpArrow) {
+                        if (root.sel_action >= 3 && !root.show_confirm) { root.sel_action = root.sel_action - 3; }
+                        return accept;
+                    }
+                    if (event.text == Key.DownArrow) {
+                        if (root.sel_action < 3 && !root.show_confirm) { root.sel_action = min(root.sel_action + 3, 4); }
+                        return accept;
+                    }
+                    // Enter → confirm
+                    if (event.text == Key.Return) {
+                        if (root.show_confirm) {
+                            root.show_confirm = false;
+                            root.execute-system-action(root.pending_action);
+                        } else {
+                            root.pending_action = SystemActions.ids[root.sel_action];
+                            root.pending_label  =
+                                root.sel_action == 0 ? "Execute Logout?" :
+                                root.sel_action == 1 ? "Execute Toggle DND?" :
+                                root.sel_action == 2 ? "Execute Restart?" :
+                                root.sel_action == 3 ? "Execute Suspend?" :
+                                "Execute Power Off?";
+                            root.show_confirm   = true;
+                        }
+                        return accept;
+                    }
+                    return reject;
+                }
+
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: transparent;
+
+                    VerticalBox {
+                        padding: 16px;
+                        spacing: 12px;
+                        alignment: center;
+
+                        // Row 1: Lock  Sleep  Restart
+                        HorizontalBox {
+                            spacing: 12px;
+                            alignment: center;
+
+                            Rectangle {
+                                width: 172px; height: 90px;
+                                background: root.sel_action == 0 ? #2a3f5f : #1e293b;
+                                border-radius: 12px;
+                                border-width: root.sel_action == 0 ? 2px : 1px;
+                                border-color: root.sel_action == 0 ? #89b4fa : #334155;
+                                VerticalBox {
+                                    alignment: center; spacing: 6px;
+                                    Text { text: "🚪"; font-size: 32px; horizontal-alignment: center; }
+                                    Text { text: "Logout"; font-size: 14px; font-weight: 600; color: #cdd6f4; horizontal-alignment: center; }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.sel_action = 0;
+                                        root.pending_action = "logout";
+                                        root.pending_label  = "Execute Logout?";
+                                        root.show_confirm   = true;
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: 172px; height: 90px;
+                                background: root.sel_action == 1 ? #2a3f5f : #1e293b;
+                                border-radius: 12px;
+                                border-width: root.sel_action == 1 ? 2px : 1px;
+                                border-color: root.sel_action == 1 ? #89b4fa : #334155;
+                                VerticalBox {
+                                    alignment: center; spacing: 6px;
+                                    Text { text: "🔕"; font-size: 32px; horizontal-alignment: center; }
+                                    Text { text: "Toggle DND"; font-size: 14px; font-weight: 600; color: #cdd6f4; horizontal-alignment: center; }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.sel_action = 1;
+                                        root.pending_action = "togglednd";
+                                        root.pending_label  = "Execute Toggle DND?";
+                                        root.show_confirm   = true;
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: 172px; height: 90px;
+                                background: root.sel_action == 2 ? #2a3f5f : #1e293b;
+                                border-radius: 12px;
+                                border-width: root.sel_action == 2 ? 2px : 1px;
+                                border-color: root.sel_action == 2 ? #89b4fa : #334155;
+                                VerticalBox {
+                                    alignment: center; spacing: 6px;
+                                    Text { text: "🔁"; font-size: 32px; horizontal-alignment: center; }
+                                    Text { text: "Restart"; font-size: 14px; font-weight: 600; color: #cdd6f4; horizontal-alignment: center; }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.sel_action = 2;
+                                        root.pending_action = "restart";
+                                        root.pending_label  = "Execute Restart?";
+                                        root.show_confirm   = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Row 2: Suspend  Power Off
+                        HorizontalBox {
+                            spacing: 12px;
+                            alignment: center;
+
+                            Rectangle {
+                                width: 260px; height: 90px;
+                                background: root.sel_action == 3 ? #2a3f5f : #1e293b;
+                                border-radius: 12px;
+                                border-width: root.sel_action == 3 ? 2px : 1px;
+                                border-color: root.sel_action == 3 ? #89b4fa : #334155;
+                                VerticalBox {
+                                    alignment: center; spacing: 6px;
+                                    Text { text: "⏸"; font-size: 32px; horizontal-alignment: center; }
+                                    Text { text: "Suspend"; font-size: 14px; font-weight: 600; color: #cdd6f4; horizontal-alignment: center; }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.sel_action = 3;
+                                        root.pending_action = "suspend";
+                                        root.pending_label  = "Execute Suspend?";
+                                        root.show_confirm   = true;
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: 260px; height: 90px;
+                                background: root.sel_action == 4 ? #5f1a1a : #2d1b1b;
+                                border-radius: 12px;
+                                border-width: root.sel_action == 4 ? 2px : 1px;
+                                border-color: root.sel_action == 4 ? #f87171 : #7f1d1d;
+                                VerticalBox {
+                                    alignment: center; spacing: 6px;
+                                    Text { text: "⏻"; font-size: 32px; horizontal-alignment: center; }
+                                    Text { text: "Power Off"; font-size: 14px; font-weight: 600; color: #f87171; horizontal-alignment: center; }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.sel_action = 4;
+                                        root.pending_action = "poweroff";
+                                        root.pending_label  = "Execute Power Off?";
+                                        root.show_confirm   = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } // End of FocusScope wrapper Rectangle
+
+        // Divider
+        Rectangle {
+                height: root.search_text == "" && root.active_mode == AppMode.Root ? 0px : 1px;
+                background: #313244;
                 clip: true;
             }
 
-            // Footer: Commands
-                Rectangle {
+            // ── Footer — different per plugin ─────────────────────────────────
+            Rectangle {
                 height: 40px;
-                background: #181825c0; // Slightly darker and more transparent
-                    
-                    HorizontalBox {
+                background: #181825c0;
+
+                HorizontalBox {
                     padding-left: 16px;
                     padding-right: 16px;
+
                     Text {
-                        text: root.active_mode == AppMode.Emoji ? "Show Details" : root.active_mode == AppMode.Root ? "App Indexer v1 ❄" : "Clipboard History 📋";
+                        text: root.active_mode == AppMode.Emoji          ? "😀  Emoji Picker"
+                            : root.active_mode == AppMode.Clipboard       ? "📋  Clipboard History"
+                            : root.active_mode == AppMode.SystemActions   ? "⚡  System Actions"
+                            : "🔍  App Indexer v1";
                         color: #a6adc8;
                         font-size: 12px;
                         vertical-alignment: center;
                     }
 
                     Text {
-                        text: root.active_mode == AppMode.Emoji ? "Enter ↵ to Copy" : "Type to Search • Enter to Open";
+                        text: root.active_mode == AppMode.Emoji          ? "Enter ↵ to Copy • Ctrl+T Switch Group"
+                            : root.active_mode == AppMode.Clipboard       ? "Enter ↵ to Copy • @c to open"
+                            : root.active_mode == AppMode.SystemActions   ? "Arrow keys navigate • Enter select • Alt← back"
+                            : "Enter ↵ to Open • @e Emoji • @c Clip • @s System";
                         color: #6c7086;
                         font-size: 12px;
                         vertical-alignment: center;
@@ -451,10 +652,98 @@ export component AppWindow inherits Window {
                 }
             }
         }
+
+        // ── Confirmation overlay (shown over everything) ──────────────────────
+        if root.show_confirm: Rectangle {
+            // Semi-transparent dark backdrop
+            background: #000000b0;
+            border-radius: 12px;
+            width: 100%;
+            height: 100%;
+
+            // Dialog card
+            Rectangle {
+                x: (parent.width - 360px) / 2;
+                y: (parent.height - 160px) / 2;
+                width: 360px;
+                height: 160px;
+                background: #24273a;
+                border-radius: 14px;
+                border-width: 1px;
+                border-color: #45475a;
+
+                VerticalBox {
+                    padding: 24px;
+                    spacing: 20px;
+                    alignment: center;
+
+                    Text {
+                        text: root.pending_label;
+                        font-size: 17px;
+                        font-weight: 700;
+                        color: #cdd6f4;
+                        horizontal-alignment: center;
+                    }
+
+                    HorizontalBox {
+                        spacing: 16px;
+                        alignment: center;
+
+                        // Cancel
+                        Rectangle {
+                            width: 130px;
+                            height: 40px;
+                            background: #313244;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: #45475a;
+                            Text {
+                                text: "Cancel";
+                                color: #a6adc8;
+                                font-size: 14px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                            }
+                            TouchArea {
+                                clicked => { root.show_confirm = false; }
+                            }
+                        }
+
+                        // Apply / confirm
+                        Rectangle {
+                            width: 130px;
+                            height: 40px;
+                            background: root.pending_action == "poweroff" ? #7f1d1d : #1e3a5f;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: root.pending_action == "poweroff" ? #f87171 : #89b4fa;
+                            Text {
+                                text: "Apply";
+                                color: root.pending_action == "poweroff" ? #f87171 : #89b4fa;
+                                font-size: 14px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                            }
+                            TouchArea {
+                                clicked => {
+                                    root.show_confirm = false;
+                                    root.execute-system-action(root.pending_action);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-    
-    // update-scroll: Rust calls this after key navigation to keep the selected emoji visible.
-    // Writes scroll.viewport-y directly so mouse-wheel scrolling works freely between keystrokes.
+
+    // ── update-scroll (emoji viewport) ────────────────────────────────────────
     update-scroll(target_y) => {
         let tgt = target_y * 1px;
         let item_bot = tgt + 85px;
@@ -462,10 +751,8 @@ export component AppWindow inherits Window {
         let view_bot = view_top + scroll.height;
 
         if (tgt < view_top) {
-            // Item above visible area → scroll up
             scroll.viewport-y = 0px - tgt + 8px;
         } else if (item_bot > view_bot) {
-            // Item below visible area → scroll down
             scroll.viewport-y = 0px - (item_bot - scroll.height) - 8px;
         }
     }

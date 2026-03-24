@@ -1,0 +1,33 @@
+// Shared data types used by palette.slint and all plugin components.
+
+export enum AppMode {
+    Root,
+    Emoji,
+    Clipboard,
+    SystemActions,
+}
+
+export struct SearchResult {
+    name: string,
+    exec: string,
+    icon: image,
+    type_label: string,
+}
+
+export struct EmojiResult {
+    character: string,
+    name: string,
+    row: int,
+    col: int,
+    orig_index: int,
+}
+
+export struct EmojiCategory {
+    name: string,
+    count: int,
+    emojis: [EmojiResult],
+}
+
+export struct ClipboardResult {
+    content: string,
+}

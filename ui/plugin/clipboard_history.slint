@@ -1,0 +1,56 @@
+import { HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+import { ClipboardResult } from "../types.slint";
+
+export component ClipboardHistoryView {
+    // ── Inputs ───────────────────────────────────────────────────────────────
+    in property <[ClipboardResult]> clipboard_results: [];
+    in-out property <int> selected_index: 0;
+
+    // ── Callbacks ─────────────────────────────────────────────────────────────
+    callback execute-selected();
+
+    // ── Layout ───────────────────────────────────────────────────────────────
+    VerticalBox {
+        alignment: start;
+        spacing: 4px;
+
+        for result[i] in root.clipboard_results: Rectangle {
+            height: 50px;
+            background: i == root.selected_index ? #89b4fa40 : transparent;
+            border-radius: 8px;
+
+            HorizontalBox {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 12px;
+
+                // Clipboard icon
+                Text {
+                    text: "📋";
+                    font-size: 16px;
+                    width: 24px;
+                    vertical-alignment: center;
+                }
+
+                // Content preview (truncated with ellipsis)
+                Text {
+                    text: result.content;
+                    color: i == root.selected_index ? #cdd6f4 : #bac2de;
+                    font-size: 14px;
+                    font-weight: i == root.selected_index ? 600 : 400;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
+
+            TouchArea {
+                clicked => {
+                    root.selected_index = i;
+                    root.execute-selected();
+                }
+            }
+        }
+    }
+}

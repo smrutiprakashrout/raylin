@@ -1,0 +1,24 @@
+[general]
+first_run = true
+theme = "catppuccin-mocha"
+desktop_environment = "auto"  # auto-detected: gnome | kde | sway | hyprland | x11
+
+[shortcuts.global]
+main_launcher = "Super+Space"
+emoji_picker = "Super+E"
+clipboard_history = "Super+V"
+
+[shortcuts.in_app]
+next_item = "Down"
+prev_item = "Up"
+execute = "Enter"
+cancel = "Escape"
+
+[plugins.app_launcher]
+enabled = true
+
+[plugins.emoji]
+enabled = true
+
+[plugins.clipboard]
+enabled = true

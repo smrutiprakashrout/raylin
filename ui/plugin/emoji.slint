@@ -1,0 +1,112 @@
+import { HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+import { EmojiResult, EmojiCategory } from "../types.slint";
+
+export component EmojiPickerView {
+    // ── Inputs ───────────────────────────────────────────────────────────────
+    in property <[EmojiCategory]> emoji_categories: [];
+    in-out property <int> current_group_index: 0;
+    in-out property <int> selected_index: 0;
+
+    // ── Callbacks ─────────────────────────────────────────────────────────────
+    callback execute-selected();
+
+    // ── Layout ───────────────────────────────────────────────────────────────
+    VerticalBox {
+        alignment: start;
+        padding-top: 12px;
+        padding-bottom: 16px;
+        spacing: 12px;
+
+        // ── Group badge: name pill + counter + Ctrl+T hint ────────────────────
+        HorizontalBox {
+            padding-left: 14px;
+            padding-right: 14px;
+            alignment: start;
+            spacing: 10px;
+
+            // Active group name pill
+            Rectangle {
+                border-radius: 6px;
+                background: #313244;
+                height: 26px;
+                HorizontalBox {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    Text {
+                        text: root.emoji_categories.length > 0
+                            ? root.emoji_categories[root.current_group_index].name
+                            : "";
+                        color: #cdd6f4;
+                        font-size: 13px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Emoji count badge
+            Rectangle {
+                border-radius: 6px;
+                background: #1e1e2e;
+                height: 26px;
+                HorizontalBox {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    Text {
+                        text: root.emoji_categories.length > 0
+                            ? root.emoji_categories[root.current_group_index].count
+                            : "";
+                        color: #6c7086;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Spacer
+            Rectangle { horizontal-stretch: 1; }
+
+            // Ctrl+T hint
+            Text {
+                text: "Ctrl+T to switch";
+                color: #45475a;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+
+        // ── Active category grid (7-column fixed layout) ──────────────────────
+        if root.emoji_categories.length > 0: Rectangle {
+            height: ceil(root.emoji_categories[root.current_group_index].emojis.length / 7) * 85px;
+
+            for result[i] in root.emoji_categories[root.current_group_index].emojis: Rectangle {
+                x: mod(i, 7) * 90px + 10px;
+                y: floor(i / 7) * 85px;
+                width: 75px;
+                height: 75px;
+                background: result.orig_index == root.selected_index ? #89b4fa40 : #1b2331;
+                border-radius: 8px;
+                border-width: 2px;
+                border-color: result.orig_index == root.selected_index ? #89b4fa : #283448;
+
+                Text {
+                    text: result.character;
+                    font-size: 50px;
+                    font-family: "Noto Color Emoji";
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.selected_index = result.orig_index;
+                        root.execute-selected();
+                    }
+                }
+            }
+        }
+    }
+}

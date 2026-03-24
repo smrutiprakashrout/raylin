@@ -1,0 +1,66 @@
+import { HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+import { SearchResult } from "../types.slint";
+
+export component AppLauncherView {
+    // ── Inputs ───────────────────────────────────────────────────────────────
+    in property <[SearchResult]> results: [];
+    in-out property <int> selected_index: 0;
+
+    // ── Callbacks (wired by palette.slint shell) ──────────────────────────
+    callback item-activated(int);   // user clicked a row
+    callback execute-selected();    // user pressed Enter
+
+    // ── Layout ───────────────────────────────────────────────────────────────
+    VerticalBox {
+        alignment: start;
+        spacing: 4px;
+
+        for result[i] in root.results: Rectangle {
+            height: 50px;
+            background: i == root.selected_index ? #89b4fa40 : transparent;
+            border-radius: 8px;
+
+            HorizontalBox {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 12px;
+
+                // App icon
+                Image {
+                    source: result.icon;
+                    width: 24px;
+                    height: 24px;
+                    vertical-alignment: center;
+                }
+
+                // App name
+                Text {
+                    text: result.name;
+                    color: i == root.selected_index ? #cdd6f4 : #bac2de;
+                    font-size: 16px;
+                    font-weight: i == root.selected_index ? 600 : 400;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                // Package type label (right-aligned, subtle)
+                Text {
+                    text: result.type_label;
+                    color: #9fa4d1;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+
+            TouchArea {
+                clicked => {
+                    root.selected_index = i;
+                    root.item-activated(i);
+                    root.execute-selected();
+                }
+            }
+        }
+    }
+}
